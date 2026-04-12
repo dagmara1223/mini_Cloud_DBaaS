@@ -43,7 +43,7 @@ docker_client = docker.from_env()
 db_registry: dict[str, dict] = {}
 
 POSTGRES_IMAGE = "postgres:16-alpine"
-PORT_START = 5433  # port 5432 zarezerwowany dla ewentualnego systemowego PG
+PORT_START = 5500  # port 5500 zarezerwowany dla ewentualnego systemowego PG
 
 # Pierwszy wolny port, który nie jest używany przez bazy
 def _next_free_port() -> int:
