@@ -11,7 +11,7 @@ Architektura:
 POST /databases -> uruchamia kontener postgreSQL, zwraca db_id + port + connection string
 GET /databases -> lista wszystkich baz hostowanych na tym node
 GET /databases/{db_id} -> port, status, owner, uptime dla kontenera
-DELETE /databases/{db_id} -> docker stop + rm, usuwa z local registry   <----------NA RAZIE TYLE 
+DELETE /databases/{db_id} -> docker stop + rm, usuwa z local registry  
 
 -------------------------------Life bazy ---------------------------
 POST /databases/{db_id}/start -> docker start czyli wznawia zatrzymany kontener
@@ -163,7 +163,114 @@ def delete_database(db_id: str):
     del db_registry[db_id]
     return {"status": "deleted", "db_id": db_id}
 
+# ---------------------- wznowienie zatrzymanego kontenera------
+@app.post("/databases/{db_id}/start")
+def start_database(db_id: str):
+    """
+    Uruchamia wcześniej zatrzymany kontener bez jego usuwania przy zachowaniu danych.
+    """
+    entry = _get_db_or_404(db_id)
 
+    try:
+        container = docker_client.containers.get(entry["container_id"])
+        container.start()
+        entry["status"] = "running"
+    except docker.errors.NotFound:
+        raise HTTPException(status_code=404, detail="Container not found")
+    except docker.errors.APIError as e:
+        raise HTTPException(status_code=500, detail=f"Docker error: {e}")
+
+    return {"status": "running", "db_id": db_id, "port": entry["port"]}
+
+# ------------------- zatrzymaj ale nie usuwaj ----------
+@app.post("/databases/{db_id}/stop")
+def stop_database(db_id: str):
+    """
+    Zatrzymuje kontener bez usuwania danych.
+    """
+    entry = _get_db_or_404(db_id)
+
+    try:
+        container = docker_client.containers.get(entry["container_id"])
+        container.stop(timeout=5)
+        entry["status"] = "stopped"
+    except docker.errors.NotFound:
+        raise HTTPException(status_code=404, detail="Container not found")
+    except docker.errors.APIError as e:
+        raise HTTPException(status_code=500, detail=f"Docker error: {e}")
+
+    return {"status": "stopped", "db_id": db_id}
+
+
+# ------------- EXECUTE SQL ------------------------
+@app.post("/databases/{db_id}/query")
+def execute_query(db_id: str, req: QueryRequest):
+    """
+    Łączy się do lokalnego PostgreSQL i wykonuje dowolne zapytanie SQL -> 
+    Zwraca rows (dla SELECT) lub affected_rows (dla INSERT/UPDATE/DELETE).
+    """
+    entry = _get_db_or_404(db_id)
+
+    if entry["status"] != "running":
+        raise HTTPException(status_code=409, detail=f"DB is {entry['status']}, not running")
+
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            host="localhost",
+            port=entry["port"],
+            dbname=entry["db_name"],
+            user=entry["owner"],
+            password=entry["password"],
+            connect_timeout=5,
+        )
+        cur = conn.cursor()
+        cur.execute(req.query, req.params or [])
+
+        if cur.description:  #select
+            columns = [d[0] for d in cur.description]
+            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+            conn.commit()
+            return {"status": "ok", "rows": rows, "row_count": len(rows)}
+        else:  # insert /update / delete 
+            affected = cur.rowcount
+            conn.commit()
+            return {"status": "ok", "rows": [], "affected_rows": affected}
+
+    except psycopg2.Error as e:
+        raise HTTPException(status_code=400, detail=f"SQL error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+# ------- health check ------------------
+@app.get("/health")
+def health_check():
+    """
+    Sprawdza czy node żyje, gdzie active_dbs to liczba kontenerów ze statusem 'running'.
+    """
+    active = sum(1 for v in db_registry.values() if v.get("status") == "running")
+    return {
+        "status": "ok",
+        "active_dbs": active,
+        "total_dbs": len(db_registry),
+    }
+
+# ----------------- metryki -------------------------
+@app.get("/metrics")
+def get_metrics():
+    """
+    Metryki obciążenia node używane przez load balancer, szczególnie przydatne do implementacji 
+    wyboru kontenera przez load balancer
+    """
+    active = sum(1 for v in db_registry.values() if v.get("status") == "running")
+    return {
+        "db_count": len(db_registry),
+        "active_dbs": active,
+        "cpu_percent": psutil.cpu_percent(interval=0.1),
+        "mem_percent": psutil.virtual_memory().percent,
+        "mem_available_mb": round(psutil.virtual_memory().available / 1024 / 1024),
+    }
 
 
 # uruchomienie ------------------------
