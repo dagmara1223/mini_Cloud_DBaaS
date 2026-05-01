@@ -8,10 +8,8 @@ import (
 	"github.com/nkucht4/load_balancer/internal/proxy"
 )
 
-var lb *balancer.Balancer
-
 func main() {
-	lb = balancer.New([]string{
+	lb := balancer.New([]string{
 		"http://localhost:8001",
 		"http://localhost:8002",
 	})

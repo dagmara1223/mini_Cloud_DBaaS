@@ -9,11 +9,8 @@ type Node struct {
 	URL string
 }
 
-type Metrics struct {
-	DBCount    int     `json:"db_count"`
-	ActiveDBs  int     `json:"active_dbs"`
-	CPUPercent float64 `json:"cpu_percent"`
-	MemPercent float64 `json:"mem_percent"`
+type DBLocation struct {
+	NodeURL string
 }
 
 type Balancer struct {
@@ -21,6 +18,8 @@ type Balancer struct {
 
 	mu      sync.RWMutex
 	counter int
+
+	dbMap map[string]DBLocation
 }
 
 func New(nodes []string) *Balancer {
@@ -31,6 +30,7 @@ func New(nodes []string) *Balancer {
 
 	return &Balancer{
 		nodes: n,
+		dbMap: make(map[string]DBLocation),
 	}
 }
 
@@ -46,4 +46,25 @@ func (b *Balancer) NextNode() (Node, error) {
 	b.counter++
 
 	return node, nil
+}
+
+func (b *Balancer) RegisterDB(dbID string, node Node) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.dbMap[dbID] = DBLocation{
+		NodeURL: node.URL,
+	}
+}
+
+func (b *Balancer) GetNodeForDB(dbID string) (Node, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	loc, ok := b.dbMap[dbID]
+	if !ok {
+		return Node{}, errors.New("db not found")
+	}
+
+	return Node{URL: loc.NodeURL}, nil
 }
