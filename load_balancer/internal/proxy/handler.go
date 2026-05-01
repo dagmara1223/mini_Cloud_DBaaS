@@ -34,24 +34,25 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		forwardRequest(w, r, node.URL)
+		forwardRequest(w, r, &node)
 		return
 	}
 
 	// -------- FALLBACK (e.g. /health) --------
-	node, err := lb.NextNode()
+	node, err := lb.SelectNode()
 	if err != nil {
 		http.Error(w, "no nodes", 500)
 		return
 	}
 
-	forwardRequest(w, r, node.URL)
+	realNode := lb.GetNodePtr(node)
+	forwardRequest(w, r, realNode)
 }
 
 // ================= CREATE DB =================
 
 func handleCreateDB(w http.ResponseWriter, r *http.Request) {
-	node, err := lb.NextNode()
+	node, err := lb.SelectNode()
 	if err != nil {
 		http.Error(w, "no nodes", 500)
 		return
@@ -82,20 +83,25 @@ func handleCreateDB(w http.ResponseWriter, r *http.Request) {
 
 // ================= HELPERS =================
 
-func forwardRequest(w http.ResponseWriter, r *http.Request, target string) {
-	req, _ := http.NewRequest(r.Method, target+r.URL.Path, r.Body)
+func forwardRequest(w http.ResponseWriter, r *http.Request, node *balancer.Node) error {
+	req, err := http.NewRequest(r.Method, node.URL+r.URL.Path, r.Body)
+	if err != nil {
+		return err
+	}
+
 	req.Header = r.Header
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		http.Error(w, "node error", 502)
-		return
+		return err
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 	copyResponse(w, resp, body)
+
+	return nil
 }
 
 func copyResponse(w http.ResponseWriter, resp *http.Response, body []byte) {

@@ -12,7 +12,7 @@ func main() {
 	lb := balancer.New([]string{
 		"http://localhost:8001",
 		"http://localhost:8002",
-	})
+	}, balancer.LeastLoaded)
 
 	proxy.SetBalancer(lb)
 
