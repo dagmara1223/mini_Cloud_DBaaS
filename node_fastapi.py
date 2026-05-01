@@ -4,6 +4,22 @@ Każdy node uruchamia aplikację na porcie 8000.
 Żeby działało, musi być uruchomiony docker desktop!
 Następnie należy udać się na stronę: http://127.0.0.1:8000/docs 
 
+Na potrzeby demo, aby zadziałała autentykacja, należy wprowadzić :  !!!!!!!!!!!
+dev-secret-change-me 
+gdy pojawi się okienko w Swaggerze.  (teraz powinno działać 
+automatycznie bo mamy plik .env)
+Aby wygenerować prawdziwy token - w terminalu: 
+
+# 1. Wygeneruj klucz
+python -c "import secrets; print(secrets.token_hex(32))"
+# np. dostajemy: a1b2c3d4e5f6...
+
+# 2. Uruchomienie z tym kluczem
+NODE_API_KEY=a1b2c3d4e5f6... uvicorn node_agent:app --port 8000
+
+# Na windows (chyba):
+set NODE_API_KEY=a1b2c3d4e5f6...
+uvicorn node_agent:app --port 8000
 
 Architektura: 
 
@@ -34,16 +50,88 @@ import psutil
 import uuid
 import os
 
-app = FastAPI(title="Node Agent", version="1.0.0")
+# token 
+from dotenv import load_dotenv
+load_dotenv()
+
+# importy pod auth i persystencję 
+import secrets
+import json
+from pathlib import Path
+from fastapi import Depends, Security
+from fastapi.security import APIKeyHeader
+# ---- 
+
+# autentykacja --------------------------------------------------
+# Klucz wczytany ze zmiennej środowiskowej NODE_API_KEY
+# Klucz wygenerowany, uruchomiony w terminalu:
+#   python -c "import secrets; print(secrets.token_hex(32))"
+# Następnie należy uruchomić agenta:
+#   NODE_API_KEY=klucz uvicorn node_agent:app --port 8000
+# Na potrzeby developmentu i testów na teraz zostaje domyślny klucz "dev-secret-change-me"
+
+API_KEY = os.getenv("NODE_API_KEY", "dev-secret-change-me")
+api_key_header = APIKeyHeader(name="X-API-Key")
+ 
+def verify_key(key: str = Security(api_key_header)):
+    """Sprawdzamy, czy klucz API w headerze X-API-Key jest poprawny."""
+    if not secrets.compare_digest(key, API_KEY):
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    
+# persystencja rejestru ------------------------------------------------
+# db_registry zapisywany jest do pliku JSON przy każdej zmianie stanu.
+# dzięki temu po restarcie agenta bazy nie znikają z rejestru (zapisany stan)
+REGISTRY_FILE = Path("db_registry.json")
+ 
+def _save_registry():
+    """Zapisuje aktualny stan rejestru do pliku JSON."""
+    with open(REGISTRY_FILE, "w") as f:
+        json.dump(db_registry, f, indent=2)
+ 
+def _load_registry() -> dict:
+    """Wczytuje rejestr z pliku JSON przy starcie aplikacji."""
+    if REGISTRY_FILE.exists():
+        try:
+            with open(REGISTRY_FILE, "r") as f:
+                content = f.read().strip()
+                if not content: # plik pusty
+                    return {}
+                return json.loads(content)
+        except json.JSONDecodeError: # plik uszkodzony
+            print("UWAGA: db_registry.json uszkodzony - zaczynam od pustego rejestru")
+            return {}
+    return {}
+
+# dodanie persystencji - klucza
+app = FastAPI(
+    title="Node Agent",
+    version="1.0.0",
+    dependencies=[Depends(verify_key)]
+)
 
 # Klient Docker i lokalny rejestr baz ----------------------------------
 docker_client = docker.from_env()
 
 # In-memory registry: db_id -> { db_name, port, owner, container_id, status }
-db_registry: dict[str, dict] = {}
+db_registry: dict[str, dict] = _load_registry() # wczytujemy stan przy starcie
 
 POSTGRES_IMAGE = "postgres:16-alpine"
 PORT_START = 5500  # port 5500 zarezerwowany dla ewentualnego systemowego PG
+
+# synchro z dockerem na starcie ---------------------------------------------
+@app.on_event("startup")
+def sync_registry_with_docker():
+    """
+    Przy starcie agenta sprawdza rzeczywisty stan każdego kontenera w Dockerze
+    i aktualizuje status w rejestrze
+    """
+    for db_id, entry in db_registry.items():
+        try:
+            container = docker_client.containers.get(entry["container_id"])
+            entry["status"] = container.status  # aktualizacja ze stanem z Dockera
+        except docker.errors.NotFound:
+            entry["status"] = "missing"  # kontener zniknął np. ręcznie został usunięty
+    _save_registry()
 
 # Pierwszy wolny port, który nie jest używany przez bazy
 def _next_free_port() -> int:
@@ -106,6 +194,7 @@ def create_database(req: CreateDBRequest):
         "container_name": container_name,
         "status": "running",
     }
+    _save_registry() # zapisanie stanu
 
     hostname = os.getenv("NODE_HOST", "localhost")
     return {
@@ -161,6 +250,7 @@ def delete_database(db_id: str):
         raise HTTPException(status_code=500, detail=f"Docker error: {e}")
 
     del db_registry[db_id]
+    _save_registry()
     return {"status": "deleted", "db_id": db_id}
 
 # ---------------------- wznowienie zatrzymanego kontenera------
@@ -179,6 +269,8 @@ def start_database(db_id: str):
         raise HTTPException(status_code=404, detail="Container not found")
     except docker.errors.APIError as e:
         raise HTTPException(status_code=500, detail=f"Docker error: {e}")
+    
+    _save_registry()
 
     return {"status": "running", "db_id": db_id, "port": entry["port"]}
 
@@ -198,6 +290,8 @@ def stop_database(db_id: str):
         raise HTTPException(status_code=404, detail="Container not found")
     except docker.errors.APIError as e:
         raise HTTPException(status_code=500, detail=f"Docker error: {e}")
+    
+    _save_registry()
 
     return {"status": "stopped", "db_id": db_id}
 
