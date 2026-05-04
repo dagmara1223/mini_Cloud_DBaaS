@@ -7,3 +7,4 @@ pyvenv.cfg
 lib64/
 db_registry.json
 .env
+/ui/node_modules
