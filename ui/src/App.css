@@ -101,3 +101,34 @@ body {
 .db-other {
   color: orange;
 }
+
+.kpi-row {
+  display: flex;
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.kpi {
+  background: #f1f5f9;
+  padding: 15px;
+  border-radius: 12px;
+  flex: 1;
+}
+
+.kpi-label {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.kpi-value {
+  font-size: 22px;
+  font-weight: bold;
+}
+
+.green {
+  color: #22c55e;
+}
+
+.red {
+  color: #ef4444;
+}

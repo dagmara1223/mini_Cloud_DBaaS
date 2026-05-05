@@ -55,7 +55,8 @@ function App() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 5000); // 🔥 zmień na 5s
+    const interval = setInterval(fetchData, 5000);
+
 
     return () => clearInterval(interval);
   }, []);
@@ -70,6 +71,7 @@ function App() {
         tension: 0.3
       }
     ]
+
   };
 
   return (
@@ -97,14 +99,67 @@ function App() {
           {/* STATUS */}
           <div className="card">
             <div className="card-title">System Status</div>
-            <div>{status}</div>
+
+            <div className={`status-pill ${status}`}>
+              {status === "ok" ? "🟢 Healthy" : "🔴 Error"}
+            </div>
+
+            <div className="kpi-row">
+
+              <div className="kpi">
+                <div className="kpi-label">Total DBs</div>
+                <div className="kpi-value">{databases.length}</div>
+              </div>
+
+              <div className="kpi">
+                <div className="kpi-label">Running</div>
+                <div className="kpi-value green">
+                  {databases.filter(db => db.status === "running").length}
+                </div>
+              </div>
+
+              <div className="kpi">
+                <div className="kpi-label">Stopped</div>
+                <div className="kpi-value red">
+                  {databases.filter(db => db.status !== "running").length}
+                </div>
+              </div>
+
+            </div>
+
+            <div className="last-update">
+              Last update: {new Date().toLocaleTimeString()}
+            </div>
           </div>
 
           {/* METRICS */}
           <div className="card">
-            <div className="card-title">CPU (live)</div>
-            <Line data={chartData} />
+            <div className="card-title">CPU Usage (live)</div>
+
+            <Line
+              data={chartData}
+              options={{
+                responsive: true,
+                plugins: {
+                  legend: { display: false }
+                },
+                scales: {
+                  x: {
+                    display: false
+                  },
+                  y: {
+                    min: 0,
+                    max: 100
+                  }
+                }
+              }}
+            />
+
+            <div className="cpu-label">
+              Current: {cpu[cpu.length - 1] ?? 0}%
+            </div>
           </div>
+
 
           {/* DATABASES */}
           <div className="card full">
