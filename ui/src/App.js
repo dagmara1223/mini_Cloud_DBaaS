@@ -48,15 +48,35 @@ function App() {
         } catch (e) {
           console.log("metrics failed (ignored)");
         }
+        const newDbCpu = {};
+
+        for (const db of dbData) {
+          try {
+            const res = await fetch(`http://127.0.0.1:8000/databases/${db.db_id}/metrics`, { headers });
+            const data = await res.json();
+
+            const prevData = dbCpu[db.db_id] || [];
+
+            newDbCpu[db.db_id] = [
+              ...prevData.slice(-10),
+              data.cpu_percent
+            ];
+          } catch {
+            newDbCpu[db.db_id] = dbCpu[db.db_id] || [];
+          }
+        }
+
         setDbCpu(prev => {
           const updated = { ...prev };
 
-          databases.forEach(db => {
-            const prevData = updated[db.db_id] || [];
-            const newValue = Math.random() * 50 + 10;
+          for (const dbId in newDbCpu) {
+            const prevData = prev[dbId] || [];
 
-            updated[db.db_id] = [...prevData.slice(-10), newValue];
-          });
+            updated[dbId] = [
+              ...prevData.slice(-10),
+              newDbCpu[dbId].slice(-1)[0]
+            ];
+          }
 
           return updated;
         });

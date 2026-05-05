@@ -7,6 +7,6 @@
     "port": 5500,
     "container_id": "66e2000a455d2254d68b7ad5f462e95d13b502cdca8635658da49e74bbb95d52",
     "container_name": "pg_62038b7c",
-    "status": "exited"
+    "status": "running"
   }
 }

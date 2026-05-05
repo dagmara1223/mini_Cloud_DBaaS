@@ -379,6 +379,31 @@ def get_metrics():
         "mem_available_mb": round(psutil.virtual_memory().available / 1024 / 1024),
     }
 
+@app.get("/databases/{db_id}/metrics")
+def db_metrics(db_id: str):
+    entry = _get_db_or_404(db_id)
+
+    try:
+        container = docker_client.containers.get(entry["container_id"])
+        stats = container.stats(stream=False)
+
+        cpu_delta = stats["cpu_stats"]["cpu_usage"]["total_usage"] - \
+                    stats["precpu_stats"]["cpu_usage"]["total_usage"]
+
+        system_delta = stats["cpu_stats"]["system_cpu_usage"] - \
+                       stats["precpu_stats"]["system_cpu_usage"]
+
+        cpu_percent = 0.0
+        if system_delta > 0:
+            cpu_percent = (cpu_delta / system_delta) * len(stats["cpu_stats"]["cpu_usage"]["percpu_usage"]) * 100
+
+        return {
+            "cpu_percent": round(cpu_percent, 2)
+        }
+
+    except Exception as e:
+        return {"cpu_percent": 0}
+
 # uruchomienie ------------------------
 if __name__ == "__main__":
     import uvicorn
