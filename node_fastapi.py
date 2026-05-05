@@ -61,6 +61,8 @@ from pathlib import Path
 from fastapi import Depends, Security
 from fastapi.security import APIKeyHeader
 # ---- 
+from fastapi.middleware.cors import CORSMiddleware
+
 
 # autentykacja --------------------------------------------------
 # Klucz wczytany ze zmiennej środowiskowej NODE_API_KEY
@@ -82,7 +84,7 @@ def verify_key(key: str = Security(api_key_header)):
 # db_registry zapisywany jest do pliku JSON przy każdej zmianie stanu.
 # dzięki temu po restarcie agenta bazy nie znikają z rejestru (zapisany stan)
 REGISTRY_FILE = Path("db_registry.json")
- 
+
 def _save_registry():
     """Zapisuje aktualny stan rejestru do pliku JSON."""
     with open(REGISTRY_FILE, "w") as f:
@@ -107,6 +109,17 @@ app = FastAPI(
     title="Node Agent",
     version="1.0.0",
     dependencies=[Depends(verify_key)]
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Klient Docker i lokalny rejestr baz ----------------------------------
@@ -365,7 +378,6 @@ def get_metrics():
         "mem_percent": psutil.virtual_memory().percent,
         "mem_available_mb": round(psutil.virtual_memory().available / 1024 / 1024),
     }
-
 
 # uruchomienie ------------------------
 if __name__ == "__main__":
