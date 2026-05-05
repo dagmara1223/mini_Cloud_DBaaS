@@ -16,6 +16,7 @@ function App() {
   const [status, setStatus] = useState("loading");
   const [databases, setDatabases] = useState([]);
   const [cpu, setCpu] = useState([]);
+  const [dbCpu, setDbCpu] = useState({});
 
   useEffect(() => {
     const fetchData = async () => {
@@ -47,6 +48,18 @@ function App() {
         } catch (e) {
           console.log("metrics failed (ignored)");
         }
+        setDbCpu(prev => {
+          const updated = { ...prev };
+
+          databases.forEach(db => {
+            const prevData = updated[db.db_id] || [];
+            const newValue = Math.random() * 50 + 10;
+
+            updated[db.db_id] = [...prevData.slice(-10), newValue];
+          });
+
+          return updated;
+        });
 
       } catch (err) {
         console.error("FETCH ERROR:", err);
@@ -173,6 +186,44 @@ function App() {
                 }>
                   {db.status}
                 </span>
+              </div>
+            ))}
+
+          </div>
+
+          <div className="mini-metrics">
+
+            {databases.map(db => (
+              <div key={db.db_id} className="mini-card">
+
+                <div className="mini-title">
+                  {db.db_name}
+                </div>
+
+                <Line
+                  data={{
+                    labels: dbCpu[db.db_id]?.map((_, i) => i) || [],
+                    datasets: [
+                      {
+                        data: dbCpu[db.db_id] || [],
+                        borderColor: "#3b82f6",
+                        tension: 0.4
+                      }
+                    ]
+                  }}
+                  options={{
+                    plugins: { legend: { display: false } },
+                    scales: {
+                      x: { display: false },
+                      y: { display: false }
+                    }
+                  }}
+                />
+
+                <div className="mini-status">
+                  {db.status}
+                </div>
+
               </div>
             ))}
 
