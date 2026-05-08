@@ -25,53 +25,46 @@ func SetStore(s *metadata.Store) {
 
 func Handle(w http.ResponseWriter, r *http.Request) {
 
-	// CREATE DB
 	if r.Method == "POST" && r.URL.Path == "/databases" {
 		handleCreateDB(w, r)
 		return
 	}
 
-	// ROUTING
 	dbID := extractDBID(r.URL.Path)
 	if dbID != "" {
-		record, err := store.Get(dbID)
-		if err != nil {
-			http.Error(w, "db not found", 404)
-			return
-		}
-
-		node := balancer.Node{
-			URL: record.PrimaryNodeID,
-		}
-
-		forwardRequest(w, r, &node)
+		handleDBRequest(w, r, dbID)
 		return
 	}
 
-	// FALLBACK
 	node, err := lb.SelectNode()
 	if err != nil {
-		http.Error(w, "no nodes", 500)
+		http.Error(w, "no nodes", http.StatusInternalServerError)
 		return
 	}
 
 	realNode := lb.GetNodePtr(node)
-	forwardRequest(w, r, realNode)
+	if err := forwardRequest(w, r, realNode); err != nil {
+		http.Error(w, err.Error(), 500)
+	}
 }
 
 func handleCreateDB(w http.ResponseWriter, r *http.Request) {
 	node, err := lb.SelectNode()
 	if err != nil {
-		http.Error(w, "no nodes", 500)
+		http.Error(w, "no nodes", http.StatusInternalServerError)
 		return
 	}
 
 	body, _ := io.ReadAll(r.Body)
 
-	resp, err := http.Post(node.URL+"/databases", "application/json", bytes.NewBuffer(body))
+	resp, err := http.Post(
+		node.URL+"/databases",
+		"application/json",
+		bytes.NewBuffer(body),
+	)
 	if err != nil {
 		log.Println("POST error:", err)
-		http.Error(w, err.Error(), 502)
+		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
@@ -79,23 +72,54 @@ func handleCreateDB(w http.ResponseWriter, r *http.Request) {
 	respBody, _ := io.ReadAll(resp.Body)
 
 	var data map[string]interface{}
-	json.Unmarshal(respBody, &data)
+	_ = json.Unmarshal(respBody, &data)
 
 	dbID, ok := data["db_id"].(string)
-	if ok {
-		store.Save(metadata.DBRecord{
-			DBID:           dbID,
-			PrimaryNodeID:  node.URL,
-			ReplicaNodeIDs: []string{},
-			Status:         "active",
-		})
-		log.Printf("[REGISTER] db=%s -> %s", dbID, node.URL)
+	if !ok {
+		http.Error(w, "invalid response from node", 500)
+		return
 	}
+
+	user := r.Context().Value(userKey).(string)
+
+	store.Save(metadata.DBRecord{
+		DBID:          dbID,
+		PrimaryNodeID: node.URL,
+		Status:        "active",
+		Owner:         user,
+	})
+
+	log.Printf("[REGISTER] db=%s owner=%s -> %s", dbID, user, node.URL)
 
 	copyResponse(w, resp, respBody)
 }
 
+func handleDBRequest(w http.ResponseWriter, r *http.Request, dbID string) {
+
+	record, err := store.Get(dbID)
+	if err != nil {
+		http.Error(w, "db not found", http.StatusNotFound)
+		return
+	}
+
+	user := r.Context().Value(userKey).(string)
+
+	if record.Owner != user {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	node := balancer.Node{
+		URL: record.PrimaryNodeID,
+	}
+
+	if err := forwardRequest(w, r, &node); err != nil {
+		http.Error(w, err.Error(), 500)
+	}
+}
+
 func forwardRequest(w http.ResponseWriter, r *http.Request, node *balancer.Node) error {
+
 	body, _ := io.ReadAll(r.Body)
 
 	req, err := http.NewRequest(r.Method, node.URL+r.URL.Path, bytes.NewBuffer(body))
@@ -103,7 +127,7 @@ func forwardRequest(w http.ResponseWriter, r *http.Request, node *balancer.Node)
 		return err
 	}
 
-	req.Header = r.Header
+	req.Header = r.Header.Clone()
 
 	client := &http.Client{}
 	resp, err := client.Do(req)

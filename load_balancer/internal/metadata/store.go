@@ -16,6 +16,7 @@ type DBRecord struct {
 	PrimaryNodeID  string
 	ReplicaNodeIDs []string
 	Status         string
+	Owner          string
 }
 
 func New(path string) (*Store, error) {
@@ -24,7 +25,6 @@ func New(path string) (*Store, error) {
 		return nil, err
 	}
 
-	// IMPORTANT for SQLite concurrency
 	db.SetMaxOpenConns(1)
 
 	s := &Store{db: db}
@@ -42,7 +42,8 @@ func (s *Store) initSchema() error {
 		db_id TEXT PRIMARY KEY,
 		primary_node_id TEXT,
 		replica_node_ids TEXT,
-		status TEXT
+		status TEXT,
+		owner TEXT
 	);
 	`)
 	return err
@@ -52,7 +53,7 @@ func (s *Store) Save(record DBRecord) error {
 	replicas, _ := json.Marshal(record.ReplicaNodeIDs)
 
 	_, err := s.db.Exec(`
-	INSERT INTO databases (db_id, primary_node_id, replica_node_ids, status)
+	INSERT INTO databases (db_id, primary_node_id, replica_node_ids, status, owner)
 	VALUES (?, ?, ?, ?)
 	ON CONFLICT(db_id) DO UPDATE SET
 		primary_node_id=excluded.primary_node_id,
@@ -63,6 +64,7 @@ func (s *Store) Save(record DBRecord) error {
 		record.PrimaryNodeID,
 		replicas,
 		record.Status,
+		record.Owner,
 	)
 
 	return err

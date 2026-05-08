@@ -29,7 +29,8 @@ func main() {
 	proxy.SetBalancer(lb)
 	proxy.SetStore(store)
 
-	http.HandleFunc("/", proxy.Handle)
+	http.HandleFunc("/login", proxy.LoginHandler)
+	http.HandleFunc("/", proxy.AuthMiddleware(proxy.Handle))
 
 	log.Println("LB running on :9000")
 	log.Fatal(http.ListenAndServe(":9000", nil))
