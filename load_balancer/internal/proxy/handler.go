@@ -9,36 +9,46 @@ import (
 	"strings"
 
 	"github.com/nkucht4/load_balancer/internal/balancer"
+	"github.com/nkucht4/load_balancer/internal/metadata"
 )
 
 var lb *balancer.Balancer
+var store *metadata.Store
 
 func SetBalancer(b *balancer.Balancer) {
 	lb = b
 }
 
+func SetStore(s *metadata.Store) {
+	store = s
+}
+
 func Handle(w http.ResponseWriter, r *http.Request) {
 
-	// -------- CREATE DATABASE --------
+	// CREATE DB
 	if r.Method == "POST" && r.URL.Path == "/databases" {
 		handleCreateDB(w, r)
 		return
 	}
 
-	// -------- DB ROUTING --------
+	// ROUTING
 	dbID := extractDBID(r.URL.Path)
 	if dbID != "" {
-		node, err := lb.GetNodeForDB(dbID)
+		record, err := store.Get(dbID)
 		if err != nil {
-			http.Error(w, "db not found in registry", 404)
+			http.Error(w, "db not found", 404)
 			return
+		}
+
+		node := balancer.Node{
+			URL: record.PrimaryNodeID,
 		}
 
 		forwardRequest(w, r, &node)
 		return
 	}
 
-	// -------- FALLBACK (e.g. /health) --------
+	// FALLBACK
 	node, err := lb.SelectNode()
 	if err != nil {
 		http.Error(w, "no nodes", 500)
@@ -48,8 +58,6 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 	realNode := lb.GetNodePtr(node)
 	forwardRequest(w, r, realNode)
 }
-
-// ================= CREATE DB =================
 
 func handleCreateDB(w http.ResponseWriter, r *http.Request) {
 	node, err := lb.SelectNode()
@@ -62,7 +70,8 @@ func handleCreateDB(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := http.Post(node.URL+"/databases", "application/json", bytes.NewBuffer(body))
 	if err != nil {
-		http.Error(w, "node error", 502)
+		log.Println("POST error:", err)
+		http.Error(w, err.Error(), 502)
 		return
 	}
 	defer resp.Body.Close()
@@ -74,17 +83,22 @@ func handleCreateDB(w http.ResponseWriter, r *http.Request) {
 
 	dbID, ok := data["db_id"].(string)
 	if ok {
-		lb.RegisterDB(dbID, node)
+		store.Save(metadata.DBRecord{
+			DBID:           dbID,
+			PrimaryNodeID:  node.URL,
+			ReplicaNodeIDs: []string{},
+			Status:         "active",
+		})
 		log.Printf("[REGISTER] db=%s -> %s", dbID, node.URL)
 	}
 
 	copyResponse(w, resp, respBody)
 }
 
-// ================= HELPERS =================
-
 func forwardRequest(w http.ResponseWriter, r *http.Request, node *balancer.Node) error {
-	req, err := http.NewRequest(r.Method, node.URL+r.URL.Path, r.Body)
+	body, _ := io.ReadAll(r.Body)
+
+	req, err := http.NewRequest(r.Method, node.URL+r.URL.Path, bytes.NewBuffer(body))
 	if err != nil {
 		return err
 	}
@@ -98,8 +112,8 @@ func forwardRequest(w http.ResponseWriter, r *http.Request, node *balancer.Node)
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-	copyResponse(w, resp, body)
+	respBody, _ := io.ReadAll(resp.Body)
+	copyResponse(w, resp, respBody)
 
 	return nil
 }

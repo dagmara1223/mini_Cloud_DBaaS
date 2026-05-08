@@ -25,10 +25,6 @@ type Node struct {
 	MemoryUsage float64
 }
 
-type DBLocation struct {
-	NodeURL string
-}
-
 type Balancer struct {
 	nodes []Node
 
@@ -36,8 +32,6 @@ type Balancer struct {
 	counter int
 
 	strategy Strategy
-
-	dbMap map[string]DBLocation
 }
 
 func New(nodes []string, strategy Strategy) *Balancer {
@@ -51,9 +45,12 @@ func New(nodes []string, strategy Strategy) *Balancer {
 
 	return &Balancer{
 		nodes:    n,
-		dbMap:    make(map[string]DBLocation),
 		strategy: strategy,
 	}
+}
+
+func (b *Balancer) StartMetricsRefresh() {
+	go b.refreshMetrics()
 }
 
 func (b *Balancer) GetNodePtr(n Node) *Node {
@@ -77,8 +74,7 @@ func (b *Balancer) SelectNode() (Node, error) {
 }
 
 func (b *Balancer) refreshMetrics() {
-	ticker := time.NewTicker(2 * time.Second)
-
+	ticker := time.NewTicker(10 * time.Second)
 	client := &http.Client{Timeout: 2 * time.Second}
 
 	for range ticker.C {
@@ -112,6 +108,22 @@ func (b *Balancer) refreshMetrics() {
 			n.Healthy = true
 		}
 
+		for _, n := range b.nodes {
+			status := "DOWN"
+			if n.Healthy {
+				status = "UP"
+			}
+
+			println(
+				"[METRICS]",
+				n.URL,
+				"status=", status,
+				"dbs=", n.DBCount,
+				"cpu=", n.CPUUsage,
+				"mem=", n.MemoryUsage,
+			)
+		}
+
 		b.mu.Unlock()
 	}
 }
@@ -121,22 +133,17 @@ func (b *Balancer) nextRoundRobin() (Node, error) {
 	defer b.mu.Unlock()
 
 	if len(b.nodes) == 0 {
-		return Node{}, errors.New("no nodes available")
+		return Node{}, errors.New("no nodes")
 	}
 
 	node := b.nodes[b.counter%len(b.nodes)]
 	b.counter++
-
 	return node, nil
 }
 
 func (b *Balancer) bestByMetrics() (Node, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-
-	if len(b.nodes) == 0 {
-		return Node{}, errors.New("no nodes available")
-	}
 
 	var best Node
 	bestScore := math.MaxFloat64
@@ -146,10 +153,9 @@ func (b *Balancer) bestByMetrics() (Node, error) {
 			continue
 		}
 
-		score :=
-			n.CPUUsage*50 +
-				n.MemoryUsage*30 +
-				float64(n.DBCount)*20
+		score := n.CPUUsage*50 +
+			n.MemoryUsage*30 +
+			float64(n.DBCount)*20
 
 		if score < bestScore {
 			bestScore = score
@@ -162,25 +168,4 @@ func (b *Balancer) bestByMetrics() (Node, error) {
 	}
 
 	return best, nil
-}
-
-func (b *Balancer) RegisterDB(dbID string, node Node) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	b.dbMap[dbID] = DBLocation{
-		NodeURL: node.URL,
-	}
-}
-
-func (b *Balancer) GetNodeForDB(dbID string) (Node, error) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	loc, ok := b.dbMap[dbID]
-	if !ok {
-		return Node{}, errors.New("db not found")
-	}
-
-	return Node{URL: loc.NodeURL}, nil
 }
