@@ -1,258 +1,577 @@
-import { useEffect, useState } from "react";
-import "./App.css";
+// aby odpalic: cd ui     npm start
 
+import { useEffect, useState, useCallback } from "react";
 import {
   Chart as ChartJS,
   LineElement,
   CategoryScale,
   LinearScale,
-  PointElement
+  PointElement,
+  Filler,
+  Tooltip,
 } from "chart.js";
 import { Line } from "react-chartjs-2";
+import "./App.css";
 
-ChartJS.register(LineElement, CategoryScale, LinearScale, PointElement);
+ChartJS.register(LineElement, CategoryScale, LinearScale, PointElement, Filler, Tooltip);
 
-function App() {
-  const [status, setStatus] = useState("loading");
-  const [databases, setDatabases] = useState([]);
-  const [cpu, setCpu] = useState([]);
-  const [dbCpu, setDbCpu] = useState({});
+const API = "http://127.0.0.1:8000";
+const HEADERS = { "X-API-Key": "dev-secret-change-me" };
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const headers = {
-          "X-API-Key": "dev-secret-change-me"
-        };
+const fmt = (n) => (n ?? 0).toFixed(1);
+const statusColor = (s) =>
+  s === "running" ? "#10b981" : s === "stopped" ? "#f59e0b" : "#ef4444";
 
-        // HEALTH
-        const healthRes = await fetch("http://127.0.0.1:8000/health", { headers });
-        if (!healthRes.ok) throw new Error("health failed");
-        const healthData = await healthRes.json();
-        setStatus(healthData.status);
+const Icon = {
+  db: (
+    <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+      <ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5" />
+      <path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3" />
+    </svg>
+  ),
+  play: (
+    <svg width="13" height="13" fill="currentColor" viewBox="0 0 24 24"><path d="M5 3l14 9-14 9V3z" /></svg>
+  ),
+  stop: (
+    <svg width="13" height="13" fill="currentColor" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
+  ),
+  trash: (
+    <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+      <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />
+    </svg>
+  ),
+  plus: (
+    <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  ),
+  cpu: (
+    <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+      <rect x="4" y="4" width="16" height="16" rx="2" />
+      <rect x="9" y="9" width="6" height="6" />
+      <path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2" />
+    </svg>
+  ),
+  mem: (
+    <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+      <rect x="2" y="6" width="20" height="12" rx="2" />
+      <path d="M6 6V4M10 6V4M14 6V4M18 6V4M6 18v2M10 18v2M14 18v2M18 18v2" />
+    </svg>
+  ),
+  refresh: (
+    <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+      <path d="M23 4v6h-6M1 20v-6h6" />
+      <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
+    </svg>
+  ),
+  server: (
+    <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+      <rect x="2" y="2" width="20" height="8" rx="2" />
+      <rect x="2" y="14" width="20" height="8" rx="2" />
+      <circle cx="6" cy="6" r="1" fill="currentColor" />
+      <circle cx="6" cy="18" r="1" fill="currentColor" />
+    </svg>
+  ),
+};
 
-        // DATABASES
-        const dbRes = await fetch("http://127.0.0.1:8000/databases", { headers });
-        if (!dbRes.ok) throw new Error("db failed");
-        const dbData = await dbRes.json();
-        setDatabases(dbData);
+function SparkLine({ data, color = "#0ea5e9", height = 60 }) {
+  const labels = data.map((_, i) => i);
+  return (
+    <Line
+      height={height}
+      data={{
+        labels,
+        datasets: [{
+          data,
+          borderColor: color,
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.4,
+          fill: true,
+          backgroundColor: color + "18",
+        }],
+      }}
+      options={{
+        responsive: true,
+        animation: false,
+        plugins: { legend: { display: false }, tooltip: { enabled: false } },
+        scales: {
+          x: { display: false },
+          y: { display: false, min: 0, max: 100 },
+        },
+      }}
+    />
+  );
+}
 
-        // METRICS (opcjonalnie)
-        try {
-          const metricsRes = await fetch("http://127.0.0.1:8000/metrics", { headers });
-          if (metricsRes.ok) {
-            const metricsData = await metricsRes.json();
+// modal do tworzenia bazy
+function CreateDBModal({ onClose, onCreate }) {
+  const [form, setForm] = useState({ db_name: "", owner: "", password: "" });
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
 
-            setCpu(prev => [...prev.slice(-20), metricsData.cpu_percent]);
-          }
-        } catch (e) {
-          console.log("metrics failed (ignored)");
-        }
-        const newDbCpu = {};
-
-        for (const db of dbData) {
-          try {
-            const res = await fetch(`http://127.0.0.1:8000/databases/${db.db_id}/metrics`, { headers });
-            const data = await res.json();
-
-            const prevData = dbCpu[db.db_id] || [];
-
-            newDbCpu[db.db_id] = [
-              ...prevData.slice(-10),
-              data.cpu_percent
-            ];
-          } catch {
-            newDbCpu[db.db_id] = dbCpu[db.db_id] || [];
-          }
-        }
-
-        setDbCpu(prev => {
-          const updated = { ...prev };
-
-          for (const dbId in newDbCpu) {
-            const prevData = prev[dbId] || [];
-
-            updated[dbId] = [
-              ...prevData.slice(-10),
-              newDbCpu[dbId].slice(-1)[0]
-            ];
-          }
-
-          return updated;
-        });
-
-      } catch (err) {
-        console.error("FETCH ERROR:", err);
-        setStatus("error");
-      }
-    };
-
-    fetchData();
-    const interval = setInterval(fetchData, 5000);
-
-
-    return () => clearInterval(interval);
-  }, []);
-
-  const chartData = {
-    labels: cpu.map((_, i) => i),
-    datasets: [
-      {
-        label: "CPU",
-        data: cpu,
-        borderColor: "#2563eb",
-        tension: 0.3
-      }
-    ]
-
+  const submit = async () => {
+    if (!form.db_name || !form.owner || !form.password) {
+      setErr("Wypełnij wszystkie pola.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/databases`, {
+        method: "POST",
+        headers: { ...HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+      if (!res.ok) throw new Error((await res.json()).detail);
+      const data = await res.json();
+      onCreate(data);
+      onClose();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
-    <div className="layout">
-
-      {/* SIDEBAR */}
-      <div className="sidebar">
-        <h2>☁️ Cloud</h2>
-        <div className="nav-item">Dashboard</div>
-        <div className="nav-item">Databases</div>
-        <div className="nav-item">Metrics</div>
-      </div>
-
-      {/* MAIN */}
-      <div className="main">
-
-        {/* TOPBAR */}
-        <div className="topbar">
-          <div className="title">Mini Cloud DBaaS</div>
-          <div className="badge">live</div>
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <span className="modal-title">Nowa baza danych</span>
+          <button className="modal-close" onClick={onClose}>✕</button>
         </div>
-
-        <div className="grid">
-
-          {/* STATUS */}
-          <div className="card">
-            <div className="card-title">System Status</div>
-
-            <div className={`status-pill ${status}`}>
-              {status === "ok" ? "🟢 Healthy" : "🔴 Error"}
-            </div>
-
-            <div className="kpi-row">
-
-              <div className="kpi">
-                <div className="kpi-label">Total DBs</div>
-                <div className="kpi-value">{databases.length}</div>
-              </div>
-
-              <div className="kpi">
-                <div className="kpi-label">Running</div>
-                <div className="kpi-value green">
-                  {databases.filter(db => db.status === "running").length}
-                </div>
-              </div>
-
-              <div className="kpi">
-                <div className="kpi-label">Stopped</div>
-                <div className="kpi-value red">
-                  {databases.filter(db => db.status !== "running").length}
-                </div>
-              </div>
-
-            </div>
-
-            <div className="last-update">
-              Last update: {new Date().toLocaleTimeString()}
-            </div>
+        <div className="modal-body">
+          {err && <div className="modal-err">{err}</div>}
+          <label>Nazwa bazy</label>
+          <input
+            className="inp"
+            value={form.db_name}
+            onChange={(e) => setForm({ ...form, db_name: e.target.value })}
+          />
+          <label>Owner</label>
+          <input
+            className="inp"
+            value={form.owner}
+            onChange={(e) => setForm({ ...form, owner: e.target.value })}
+          />
+          <label>Hasło</label>
+          <input
+            className="inp"
+            type="password"
+            value={form.password}
+            onChange={(e) => setForm({ ...form, password: e.target.value })}
+          />
+          <div className="modal-actions">
+            <button className="btn-ghost" onClick={onClose}>Anuluj</button>
+            <button className="btn-primary" onClick={submit} disabled={loading}>
+              {loading ? "Tworzenie..." : "Utwórz"}
+            </button>
           </div>
-
-          {/* METRICS */}
-          <div className="card">
-            <div className="card-title">CPU Usage (live)</div>
-
-            <Line
-              data={chartData}
-              options={{
-                responsive: true,
-                plugins: {
-                  legend: { display: false }
-                },
-                scales: {
-                  x: {
-                    display: false
-                  },
-                  y: {
-                    min: 0,
-                    max: 100
-                  }
-                }
-              }}
-            />
-
-            <div className="cpu-label">
-              Current: {cpu[cpu.length - 1] ?? 0}%
-            </div>
-          </div>
-
-
-          {/* DATABASES */}
-          <div className="card full">
-            <div className="card-title">Databases</div>
-
-            {databases.map((db) => (
-              <div key={db.db_id} className="db-item">
-                <span>{db.db_name}</span>
-                <span className={
-                  db.status === "running" ? "db-running" : "db-other"
-                }>
-                  {db.status}
-                </span>
-              </div>
-            ))}
-
-          </div>
-
-          <div className="mini-metrics">
-
-            {databases.map(db => (
-              <div key={db.db_id} className="mini-card">
-
-                <div className="mini-title">
-                  {db.db_name}
-                </div>
-
-                <Line
-                  data={{
-                    labels: dbCpu[db.db_id]?.map((_, i) => i) || [],
-                    datasets: [
-                      {
-                        data: dbCpu[db.db_id] || [],
-                        borderColor: "#3b82f6",
-                        tension: 0.4
-                      }
-                    ]
-                  }}
-                  options={{
-                    plugins: { legend: { display: false } },
-                    scales: {
-                      x: { display: false },
-                      y: { display: false }
-                    }
-                  }}
-                />
-
-                <div className="mini-status">
-                  {db.status}
-                </div>
-
-              </div>
-            ))}
-
-          </div>
-
         </div>
       </div>
     </div>
   );
 }
 
-export default App;
+//powaidomienie
+function Toast({ msg, type, onDone }) {
+  useEffect(() => {
+    const t = setTimeout(onDone, 3000);
+    return () => clearTimeout(t);
+  }, []);
+  return <div className={`toast toast-${type}`}>{msg}</div>;
+}
+
+// glowna aplikacja
+export default function App() {
+  const [health, setHealth] = useState(null);
+  const [metrics, setMetrics] = useState(null);
+  const [databases, setDatabases] = useState([]);
+  const [cpuHistory, setCpuHistory] = useState([]);
+  const [memHistory, setMemHistory] = useState([]);
+  const [dbCpu, setDbCpu] = useState({});
+  const [showCreate, setShowCreate] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [lastUpdate, setLastUpdate] = useState(null);
+  const [activeSection, setActiveSection] = useState("dashboard");
+
+  const notify = (msg, type = "ok") => setToast({ msg, type });
+
+  const fetchAll = useCallback(async () => {
+    try {
+      const [hRes, mRes, dbRes] = await Promise.all([
+        fetch(`${API}/health`, { headers: HEADERS }),
+        fetch(`${API}/metrics`, { headers: HEADERS }),
+        fetch(`${API}/databases`, { headers: HEADERS }),
+      ]);
+      if (hRes.ok) setHealth(await hRes.json());
+      if (mRes.ok) {
+        const m = await mRes.json();
+        setMetrics(m);
+        setCpuHistory((p) => [...p.slice(-40), m.cpu_percent]);
+        setMemHistory((p) => [...p.slice(-40), m.mem_percent]);
+      }
+      if (dbRes.ok) {
+        const dbs = await dbRes.json();
+        setDatabases(dbs);
+        // per-db CPU
+        for (const db of dbs) {
+          try {
+            const r = await fetch(`${API}/databases/${db.db_id}/metrics`, { headers: HEADERS });
+            if (r.ok) {
+              const d = await r.json();
+              setDbCpu((prev) => ({
+                ...prev,
+                [db.db_id]: [...(prev[db.db_id] || []).slice(-20), d.cpu_percent],
+              }));
+            }
+          } catch { /* ignoruj */ }
+        }
+      }
+      setLastUpdate(new Date());
+    } catch { /* serwer offline */ }
+  }, []);
+
+  useEffect(() => {
+    fetchAll();
+    const iv = setInterval(fetchAll, 5000);
+    return () => clearInterval(iv);
+  }, [fetchAll]);
+
+  const handleAction = async (db_id, action) => {
+    const method = action === "delete" ? "DELETE" : "POST";
+    const url = action === "delete"
+      ? `${API}/databases/${db_id}`
+      : `${API}/databases/${db_id}/${action}`;
+    try {
+      const res = await fetch(url, { method, headers: HEADERS });
+      if (!res.ok) throw new Error((await res.json()).detail);
+      notify(
+        action === "delete" ? "Baza usunięta" :
+          action === "start" ? "Baza uruchomiona" : "Baza zatrzymana",
+        "ok"
+      );
+      fetchAll();
+    } catch (e) {
+      notify(e.message, "err");
+    }
+  };
+
+  const isOnline = health?.status === "ok";
+  const running = databases.filter((d) => d.status === "running").length;
+  const stopped = databases.filter((d) => d.status !== "running").length;
+
+  return (
+    <div className="shell">
+      {/* sidebar */}
+      <aside className="sidebar">
+        <div className="sidebar-logo">
+          <div className="logo-icon">☁</div>
+          <div>
+            <div className="logo-title">MiniCloud</div>
+            <div className="logo-sub">DBaaS Console</div>
+          </div>
+        </div>
+
+        <nav className="nav">
+          {[
+            { id: "dashboard", label: "Dashboard", icon: "⊞" },
+            { id: "databases", label: "Databases", icon: "⛃" },
+            { id: "metrics", label: "Metrics", icon: "⎍" },
+          ].map((item) => (
+            <button
+              key={item.id}
+              className={`nav-item ${activeSection === item.id ? "active" : ""}`}
+              onClick={() => setActiveSection(item.id)}
+            >
+              <span className="nav-icon">{item.icon}</span>
+              {item.label}
+            </button>
+          ))}
+        </nav>
+
+        <div className="sidebar-footer">
+          <div className={`node-status ${isOnline ? "online" : "offline"}`}>
+            <span className="node-dot" />
+            <div>
+              <div className="node-label">node-1</div>
+              <div className="node-state">{isOnline ? "online" : "offline"}</div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* main */}
+      <main className="main">
+        {/* topbar */}
+        <header className="topbar">
+          <div className="topbar-left">
+            <span className="page-title">
+              {activeSection === "dashboard" && "Dashboard"}
+              {activeSection === "databases" && "Databases"}
+              {activeSection === "metrics" && "Metrics"}
+            </span>
+            {lastUpdate && (
+              <span className="last-upd">
+                {Icon.refresh}&nbsp;{lastUpdate.toLocaleTimeString()}
+              </span>
+            )}
+          </div>
+          <div className="topbar-right">
+            <button className="btn-primary" onClick={() => setShowCreate(true)}>
+              {Icon.plus}&nbsp;New Database
+            </button>
+          </div>
+        </header>
+
+        <div className="content">
+
+          {/* dashboard */}
+          {activeSection === "dashboard" && (
+            <>
+              {/* kpi row */}
+              <div className="kpi-row">
+                <div className="kpi-card">
+                  <div className="kpi-icon blue">{Icon.server}</div>
+                  <div className="kpi-body">
+                    <div className="kpi-label">Node status</div>
+                    <div className={`kpi-value ${isOnline ? "green" : "red"}`}>
+                      {isOnline ? "Healthy" : "Offline"}
+                    </div>
+                  </div>
+                </div>
+                <div className="kpi-card">
+                  <div className="kpi-icon teal">{Icon.db}</div>
+                  <div className="kpi-body">
+                    <div className="kpi-label">Total databases</div>
+                    <div className="kpi-value">{databases.length}</div>
+                  </div>
+                </div>
+                <div className="kpi-card">
+                  <div className="kpi-icon green">{Icon.play}</div>
+                  <div className="kpi-body">
+                    <div className="kpi-label">Running</div>
+                    <div className="kpi-value green">{running}</div>
+                  </div>
+                </div>
+                <div className="kpi-card">
+                  <div className="kpi-icon amber">{Icon.stop}</div>
+                  <div className="kpi-body">
+                    <div className="kpi-label">Stopped</div>
+                    <div className="kpi-value amber">{stopped}</div>
+                  </div>
+                </div>
+                <div className="kpi-card">
+                  <div className="kpi-icon blue">{Icon.cpu}</div>
+                  <div className="kpi-body">
+                    <div className="kpi-label">CPU</div>
+                    <div className="kpi-value">{fmt(metrics?.cpu_percent)}%</div>
+                  </div>
+                </div>
+                <div className="kpi-card">
+                  <div className="kpi-icon purple">{Icon.mem}</div>
+                  <div className="kpi-body">
+                    <div className="kpi-label">Memory</div>
+                    <div className="kpi-value">{fmt(metrics?.mem_percent)}%</div>
+                  </div>
+                </div>
+              </div>
+
+              {/*charts row */}
+              <div className="charts-row">
+                <div className="chart-card">
+                  <div className="chart-header">
+                    <span>{Icon.cpu} CPU Usage</span>
+                    <span className="chart-cur">{fmt(cpuHistory.at(-1))}%</span>
+                  </div>
+                  <SparkLine data={cpuHistory} color="#0ea5e9" height={80} />
+                </div>
+                <div className="chart-card">
+                  <div className="chart-header">
+                    <span>{Icon.mem} Memory Usage</span>
+                    <span className="chart-cur">{fmt(memHistory.at(-1))}%</span>
+                  </div>
+                  <SparkLine data={memHistory} color="#a78bfa" height={80} />
+                </div>
+              </div>
+
+              {/* mini db cards */}
+              <div className="section-title">Active databases</div>
+              <div className="db-mini-grid">
+                {databases.length === 0 && (
+                  <div className="empty-state">
+                    Brak baz. Kliknij „New Database" żeby dodać pierwszą.
+                  </div>
+                )}
+                {databases.map((db) => (
+                  <div key={db.db_id} className="db-mini-card">
+                    <div className="db-mini-top">
+                      <span className="db-mini-name">{db.db_name}</span>
+                      <span className="db-badge" style={{ color: statusColor(db.status) }}>
+                        ● {db.status}
+                      </span>
+                    </div>
+                    <div className="db-mini-owner">owner: {db.owner}</div>
+                    <div className="db-mini-port">port: {db.port}</div>
+                    <div className="db-mini-chart">
+                      <SparkLine data={dbCpu[db.db_id] || [0]} color="#10b981" height={35} />
+                    </div>
+                    <div className="db-mini-actions">
+                      {db.status !== "running" ? (
+                        <button className="act-btn green" onClick={() => handleAction(db.db_id, "start")} title="Start">
+                          {Icon.play}
+                        </button>
+                      ) : (
+                        <button className="act-btn amber" onClick={() => handleAction(db.db_id, "stop")} title="Stop">
+                          {Icon.stop}
+                        </button>
+                      )}
+                      <button className="act-btn red" onClick={() => handleAction(db.db_id, "delete")} title="Delete">
+                        {Icon.trash}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {/* databases */}
+          {activeSection === "databases" && (
+            <>
+              <div className="section-title">
+                All databases &nbsp;<span className="badge-count">{databases.length}</span>
+              </div>
+              <div className="db-table-wrap">
+                <table className="db-table">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>Name</th>
+                      <th>Owner</th>
+                      <th>Port</th>
+                      <th>Status</th>
+                      <th>CPU</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {databases.length === 0 && (
+                      <tr><td colSpan={7} className="empty-td">Brak baz danych</td></tr>
+                    )}
+                    {databases.map((db) => (
+                      <tr key={db.db_id}>
+                        <td className="td-mono">{db.db_id}</td>
+                        <td className="td-bold">{db.db_name}</td>
+                        <td>{db.owner}</td>
+                        <td className="td-mono">{db.port}</td>
+                        <td>
+                          <span className="status-chip" style={{ color: statusColor(db.status) }}>
+                            ● {db.status}
+                          </span>
+                        </td>
+                        <td className="td-spark">
+                          <SparkLine data={dbCpu[db.db_id] || [0]} color="#10b981" height={28} />
+                        </td>
+                        <td>
+                          <div className="tbl-actions">
+                            {db.status !== "running" ? (
+                              <button className="act-btn green" onClick={() => handleAction(db.db_id, "start")} title="Start">
+                                {Icon.play}
+                              </button>
+                            ) : (
+                              <button className="act-btn amber" onClick={() => handleAction(db.db_id, "stop")} title="Stop">
+                                {Icon.stop}
+                              </button>
+                            )}
+                            <button className="act-btn red" onClick={() => handleAction(db.db_id, "delete")} title="Delete">
+                              {Icon.trash}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {/* metryki */}
+          {activeSection === "metrics" && (
+            <>
+              <div className="section-title">Node metrics</div>
+              <div className="metrics-grid">
+                <div className="chart-card big">
+                  <div className="chart-header">
+                    <span>{Icon.cpu} CPU Usage — live</span>
+                    <span className="chart-cur">{fmt(cpuHistory.at(-1))}%</span>
+                  </div>
+                  <SparkLine data={cpuHistory} color="#0ea5e9" height={120} />
+                </div>
+                <div className="chart-card big">
+                  <div className="chart-header">
+                    <span>{Icon.mem} Memory Usage — live</span>
+                    <span className="chart-cur">{fmt(memHistory.at(-1))}%</span>
+                  </div>
+                  <SparkLine data={memHistory} color="#a78bfa" height={120} />
+                </div>
+              </div>
+
+              <div className="section-title" style={{ marginTop: 28 }}>Per-database CPU</div>
+              <div className="charts-row">
+                {databases.map((db) => (
+                  <div key={db.db_id} className="chart-card">
+                    <div className="chart-header">
+                      <span>{db.db_name}</span>
+                      <span className="chart-cur" style={{ color: statusColor(db.status) }}>
+                        ● {db.status}
+                      </span>
+                    </div>
+                    <SparkLine data={dbCpu[db.db_id] || [0]} color="#10b981" height={70} />
+                  </div>
+                ))}
+                {databases.length === 0 && (
+                  <div className="empty-state">Brak baz do wyświetlenia metryk.</div>
+                )}
+              </div>
+
+              <div className="metrics-raw">
+                <div className="raw-title">Raw metrics snapshot</div>
+                <div className="raw-grid">
+                  {[
+                    ["db_count", metrics?.db_count ?? "–"],
+                    ["active_dbs", metrics?.active_dbs ?? "–"],
+                    ["cpu_percent", metrics ? fmt(metrics.cpu_percent) + "%" : "–"],
+                    ["mem_percent", metrics ? fmt(metrics.mem_percent) + "%" : "–"],
+                    ["mem_available", metrics ? metrics.mem_available_mb + " MB" : "–"],
+                  ].map(([k, v]) => (
+                    <div key={k} className="raw-item">
+                      <div className="raw-key">{k}</div>
+                      <div className="raw-val">{String(v)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
+        </div>
+      </main>
+
+      {showCreate && (
+        <CreateDBModal
+          onClose={() => setShowCreate(false)}
+          onCreate={(db) => {
+            notify(`Baza „${db.db_name}" utworzona na porcie ${db.port}`, "ok");
+            fetchAll();
+          }}
+        />
+      )}
+
+      {toast && (
+        <Toast msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />
+      )}
+    </div>
+  );
+}
