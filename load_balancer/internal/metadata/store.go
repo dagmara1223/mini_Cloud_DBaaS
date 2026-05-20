@@ -54,11 +54,12 @@ func (s *Store) Save(record DBRecord) error {
 
 	_, err := s.db.Exec(`
 	INSERT INTO databases (db_id, primary_node_id, replica_node_ids, status, owner)
-	VALUES (?, ?, ?, ?)
+	VALUES (?, ?, ?, ?, ?)
 	ON CONFLICT(db_id) DO UPDATE SET
 		primary_node_id=excluded.primary_node_id,
 		replica_node_ids=excluded.replica_node_ids,
-		status=excluded.status
+		status=excluded.status,
+		owner=excluded.owner
 	`,
 		record.DBID,
 		record.PrimaryNodeID,
@@ -75,10 +76,10 @@ func (s *Store) Get(dbID string) (DBRecord, error) {
 	var replicas []byte
 
 	err := s.db.QueryRow(`
-	SELECT db_id, primary_node_id, replica_node_ids, status
+	SELECT db_id, primary_node_id, replica_node_ids, status, owner
 	FROM databases WHERE db_id = ?`,
 		dbID,
-	).Scan(&r.DBID, &r.PrimaryNodeID, &replicas, &r.Status)
+	).Scan(&r.DBID, &r.PrimaryNodeID, &replicas, &r.Status, &r.Owner)
 
 	if err != nil {
 		return r, err
@@ -89,4 +90,52 @@ func (s *Store) Get(dbID string) (DBRecord, error) {
 	}
 
 	return r, nil
+}
+
+func (s *Store) GetDBsByNode(nodeURL string) ([]DBRecord, error) {
+	rows, err := s.db.Query(`
+	SELECT db_id, primary_node_id, replica_node_ids, status, owner
+	FROM databases WHERE primary_node_id = ?
+	`, nodeURL)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []DBRecord
+
+	for rows.Next() {
+		var r DBRecord
+		var replicas []byte
+
+		err := rows.Scan(&r.DBID, &r.PrimaryNodeID, &replicas, &r.Status, &r.Owner)
+		if err != nil {
+			continue
+		}
+
+		if len(replicas) > 0 {
+			json.Unmarshal(replicas, &r.ReplicaNodeIDs)
+		}
+
+		result = append(result, r)
+	}
+
+	return result, nil
+}
+
+func (s *Store) AddReplica(dbID string, nodeURL string) error {
+	record, err := s.Get(dbID)
+	if err != nil {
+		return err
+	}
+
+	for _, r := range record.ReplicaNodeIDs {
+		if r == nodeURL {
+			return nil
+		}
+	}
+
+	record.ReplicaNodeIDs = append(record.ReplicaNodeIDs, nodeURL)
+
+	return s.Save(record)
 }

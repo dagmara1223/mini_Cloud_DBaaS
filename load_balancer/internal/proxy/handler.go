@@ -109,11 +109,29 @@ func handleDBRequest(w http.ResponseWriter, r *http.Request, dbID string) {
 		return
 	}
 
-	node := balancer.Node{
-		URL: record.PrimaryNodeID,
+	body, _ := io.ReadAll(r.Body)
+
+	isRead := isReadQuery(body)
+
+	var nodeURL string
+
+	if isRead && len(record.ReplicaNodeIDs) > 0 {
+		node, err := lb.SelectReplica(record.ReplicaNodeIDs)
+		if err != nil {
+			http.Error(w, "no replica available", 500)
+			return
+		}
+		nodeURL = node.URL
+
+		r.URL.Path = strings.Replace(r.URL.Path, "/query", "/read_query", 1)
+
+	} else {
+		nodeURL = record.PrimaryNodeID
 	}
 
-	if err := forwardRequest(w, r, &node); err != nil {
+	node := &balancer.Node{URL: nodeURL}
+
+	if err := forwardRequestWithBody(w, r, node, body); err != nil {
 		http.Error(w, err.Error(), 500)
 	}
 }
@@ -142,6 +160,12 @@ func forwardRequest(w http.ResponseWriter, r *http.Request, node *balancer.Node)
 	return nil
 }
 
+func isReadQuery(body []byte) bool {
+	q := strings.TrimSpace(strings.ToUpper(string(body)))
+
+	return strings.HasPrefix(q, "SELECT")
+}
+
 func copyResponse(w http.ResponseWriter, resp *http.Response, body []byte) {
 	for k, v := range resp.Header {
 		for _, vv := range v {
@@ -158,4 +182,26 @@ func extractDBID(path string) string {
 		return parts[2]
 	}
 	return ""
+}
+
+func forwardRequestWithBody(w http.ResponseWriter, r *http.Request, node *balancer.Node, body []byte) error {
+
+	req, err := http.NewRequest(r.Method, node.URL+r.URL.Path, bytes.NewBuffer(body))
+	if err != nil {
+		return err
+	}
+
+	req.Header = r.Header.Clone()
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	copyResponse(w, resp, respBody)
+
+	return nil
 }

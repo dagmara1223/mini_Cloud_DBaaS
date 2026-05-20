@@ -7,6 +7,7 @@ import (
 	"github.com/nkucht4/load_balancer/internal/balancer"
 	"github.com/nkucht4/load_balancer/internal/metadata"
 	"github.com/nkucht4/load_balancer/internal/proxy"
+	"github.com/nkucht4/load_balancer/internal/autoscaler"
 )
 
 func main() {
@@ -25,6 +26,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	autoscaler := autoscaler.New(lb, store, 0.7)
+	go autoscaler.Start()
 
 	proxy.SetBalancer(lb)
 	proxy.SetStore(store)
