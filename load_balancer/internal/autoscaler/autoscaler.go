@@ -20,6 +20,8 @@ type Autoscaler struct {
 	client       *http.Client
 }
 
+var lastScale = map[string]time.Time{}
+
 func New(lb *balancer.Balancer, store *metadata.Store, threshold float64) *Autoscaler {
 	return &Autoscaler{
 		lb:           lb,
@@ -58,6 +60,19 @@ func (a *Autoscaler) runOnce() {
 }
 
 func (a *Autoscaler) scaleUp(node balancer.Node) {
+
+	// ---------------- COOLDOWN GUARD ----------------
+	if t, ok := lastScale[node.URL]; ok {
+		if time.Since(t) < 60*time.Second {
+			log.Printf("[AUTOSCALER] cooldown active for %s", node.URL)
+			return
+		}
+	}
+
+	// ustaw timestamp BEFORE scaling (ważne!)
+	lastScale[node.URL] = time.Now()
+
+	// ---------------- FETCH DBS ----------------
 	dbs, err := a.store.GetDBsByNode(node.URL)
 	if err != nil {
 		log.Println("[AUTOSCALER] failed to fetch DBs:", err)
@@ -68,44 +83,53 @@ func (a *Autoscaler) scaleUp(node balancer.Node) {
 		return
 	}
 
-	db := dbs[0]
+	// ---------------- SCALE EACH DB ----------------
+	for _, db := range dbs {
 
-	target, err := a.selectTargetNode(node.URL)
-	if err != nil {
-		log.Println("[AUTOSCALER] no target node:", err)
-		return
+		target, err := a.selectTargetNode(node.URL)
+		if err != nil {
+			log.Println("[AUTOSCALER] no target node:", err)
+			return
+		}
+
+		log.Printf(
+			"[AUTOSCALER] scaling db=%s from %s -> %s",
+			db.DBID, node.URL, target.URL,
+		)
+
+		replicaURL := node.URL + "/databases/" + db.DBID + "/replica"
+
+		payload := map[string]string{
+			"target_node": target.URL,
+		}
+
+		body, _ := json.Marshal(payload)
+
+		resp, err := a.client.Post(
+			replicaURL,
+			"application/json",
+			bytes.NewBuffer(body),
+		)
+		if err != nil {
+			log.Println("[AUTOSCALER] replica create failed:", err)
+			continue
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			log.Println("[AUTOSCALER] replica creation failed:", resp.Status)
+			continue
+		}
+
+		// ---------------- STORE METADATA ----------------
+		err = a.store.AddReplica(db.DBID, target.URL)
+		if err != nil {
+			log.Println("[AUTOSCALER] failed to save replica:", err)
+			continue
+		}
+
+		log.Printf("[AUTOSCALER] replica added db=%s -> %s", db.DBID, target.URL)
 	}
-
-	log.Printf("[AUTOSCALER] scaling db=%s from %s -> %s",
-		db.DBID, node.URL, target.URL)
-
-	replicaURL := node.URL + "/databases/" + db.DBID + "/replica"
-
-	payload := map[string]string{
-		"target_node": target.URL,
-	}
-
-	body, _ := json.Marshal(payload)
-
-	resp, err := a.client.Post(replicaURL, "application/json", bytes.NewBuffer(body))
-	if err != nil {
-		log.Println("[AUTOSCALER] replica create failed:", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		log.Println("[AUTOSCALER] replica creation returned:", resp.Status)
-		return
-	}
-
-	err = a.store.AddReplica(db.DBID, target.URL)
-	if err != nil {
-		log.Println("[AUTOSCALER] failed to save replica:", err)
-		return
-	}
-
-	log.Printf("[AUTOSCALER] replica added db=%s -> %s", db.DBID, target.URL)
 }
 
 func (a *Autoscaler) selectTargetNode(exclude string) (balancer.Node, error) {
