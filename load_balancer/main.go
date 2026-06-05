@@ -12,7 +12,7 @@ import (
 
 func corsMiddleware(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
+			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 			if r.Method == "OPTIONS" { w.WriteHeader(204); return }
@@ -30,7 +30,7 @@ func main() {
 	}, balancer.RoundRobin)
 
 	// START METRICS
-	go lb.StartMetricsRefresh()
+	//go lb.StartMetricsRefresh()
 
 	// SQLite file
 	store, err := metadata.New("metadata.db")

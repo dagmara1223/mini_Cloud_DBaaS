@@ -23,60 +23,68 @@ func SetStore(s *metadata.Store) {
 	store = s
 }
 
+// ========================= ENTRY =========================
+
 func Handle(w http.ResponseWriter, r *http.Request) {
 
-	if r.Method == "POST" && r.URL.Path == "/databases" {
+	log.Printf("[PROXY] %s %s", r.Method, r.URL.Path)
+
+	switch {
+	case r.Method == "POST" && r.URL.Path == "/databases":
 		handleCreateDB(w, r)
+		return
+
+	case r.Method == "GET" && r.URL.Path == "/databases":
+		handleListAllDBs(w, r)
 		return
 	}
 
-	dbID := extractDBID(r.URL.Path)
-	if dbID != "" {
+	if dbID := extractDBID(r.URL.Path); dbID != "" {
 		handleDBRequest(w, r, dbID)
 		return
 	}
 
-	node, err := lb.SelectNode()
-	if err != nil {
-		http.Error(w, "no nodes", http.StatusInternalServerError)
-		return
-	}
-
-	realNode := lb.GetNodePtr(node)
-	if err := forwardRequest(w, r, realNode); err != nil {
-		http.Error(w, err.Error(), 500)
-	}
+	forwardToNode(w, r)
 }
 
+// ========================= CREATE DB =========================
+
 func handleCreateDB(w http.ResponseWriter, r *http.Request) {
+
 	node, err := lb.SelectNode()
 	if err != nil {
-		http.Error(w, "no nodes", http.StatusInternalServerError)
+		http.Error(w, "no nodes", 500)
 		return
 	}
 
 	body, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewBuffer(body))
 
-	resp, err := http.Post(
-		node.URL+"/databases",
-		"application/json",
-		bytes.NewBuffer(body),
-	)
+	req, _ := http.NewRequest("POST", node.URL+"/databases", bytes.NewReader(body))
+	req.Header = r.Header.Clone()
+	req.ContentLength = int64(len(body))
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
-		log.Println("POST error:", err)
-		http.Error(w, "bad gateway", http.StatusBadGateway)
+		http.Error(w, "bad gateway", 502)
 		return
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
 
+	if resp.StatusCode >= 400 {
+		writeResponse(w, resp.StatusCode, resp.Header, respBody)
+		return
+	}
+
 	var data map[string]interface{}
 	_ = json.Unmarshal(respBody, &data)
 
 	dbID, ok := data["db_id"].(string)
 	if !ok {
-		http.Error(w, "invalid response from node", 500)
+		http.Error(w, "invalid node response", 500)
 		return
 	}
 
@@ -89,91 +97,137 @@ func handleCreateDB(w http.ResponseWriter, r *http.Request) {
 		Owner:         user,
 	})
 
-	log.Printf("[REGISTER] db=%s owner=%s -> %s", dbID, user, node.URL)
+	log.Printf("[REGISTER] db=%s owner=%s node=%s", dbID, user, node.URL)
 
-	copyResponse(w, resp, respBody)
+	writeResponse(w, resp.StatusCode, resp.Header, respBody)
 }
+
+// ========================= LIST DBs =========================
+
+func handleListAllDBs(w http.ResponseWriter, r *http.Request) {
+
+	log.Printf("[GET /databases] start")
+
+	user, ok := r.Context().Value(userKey).(string)
+	if !ok {
+		http.Error(w, "unauthorized", 401)
+		return
+	}
+
+	all, err := store.GetAll()
+	if err != nil {
+		http.Error(w, "db error", 500)
+		return
+	}
+
+	filtered := make([]metadata.DBRecord, 0, len(all))
+
+	for _, db := range all {
+		if db.Owner == user {
+			filtered = append(filtered, db)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	_ = json.NewEncoder(w).Encode(filtered)
+
+	log.Printf("[GET /databases] returned %d items", len(filtered))
+}
+
+// ========================= DB REQUEST ROUTING =========================
 
 func handleDBRequest(w http.ResponseWriter, r *http.Request, dbID string) {
 
 	record, err := store.Get(dbID)
 	if err != nil {
-		http.Error(w, "db not found", http.StatusNotFound)
+		http.Error(w, "db not found", 404)
 		return
 	}
 
 	user := r.Context().Value(userKey).(string)
-
 	if record.Owner != user {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		http.Error(w, "forbidden", 403)
 		return
 	}
 
 	body, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewBuffer(body))
 
 	isRead := isReadQuery(body)
 
-	var nodeURL string
+	nodeURL := record.PrimaryNodeID
 
 	if isRead && len(record.ReplicaNodeIDs) > 0 {
 		node, err := lb.SelectReplica(record.ReplicaNodeIDs)
-		if err != nil {
-			http.Error(w, "no replica available", 500)
-			return
+		if err == nil {
+			nodeURL = node.URL
 		}
-		nodeURL = node.URL
-
-		r.URL.Path = strings.Replace(r.URL.Path, "/query", "/read_query", 1)
-
-	} else {
-		nodeURL = record.PrimaryNodeID
 	}
 
-	node := &balancer.Node{URL: nodeURL}
-
-	if err := forwardRequestWithBody(w, r, node, body); err != nil {
-		http.Error(w, err.Error(), 500)
-	}
-}
-
-func forwardRequest(w http.ResponseWriter, r *http.Request, node *balancer.Node) error {
-
-	body, _ := io.ReadAll(r.Body)
-
-	req, err := http.NewRequest(r.Method, node.URL+r.URL.Path, bytes.NewBuffer(body))
+	req, err := http.NewRequest(r.Method, nodeURL+r.URL.Path, bytes.NewReader(body))
 	if err != nil {
-		return err
+		http.Error(w, err.Error(), 500)
+		return
 	}
 
 	req.Header = r.Header.Clone()
+	req.ContentLength = int64(len(body))
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		http.Error(w, err.Error(), 502)
+		return
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	copyResponse(w, resp, respBody)
 
-	return nil
+	writeResponse(w, resp.StatusCode, resp.Header, respBody)
 }
+
+// ========================= FORWARD (GENERIC) =========================
+
+func forwardToNode(w http.ResponseWriter, r *http.Request) {
+
+	node, err := lb.SelectNode()
+	if err != nil {
+		http.Error(w, "no nodes", 500)
+		return
+	}
+
+	body, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewBuffer(body))
+
+	req, err := http.NewRequest(r.Method, node.URL+r.URL.Path, bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	req.Header = r.Header.Clone()
+	req.ContentLength = int64(len(body))
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		http.Error(w, err.Error(), 502)
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	writeResponse(w, resp.StatusCode, resp.Header, respBody)
+}
+
+// ========================= UTIL =========================
 
 func isReadQuery(body []byte) bool {
 	q := strings.TrimSpace(strings.ToUpper(string(body)))
-
 	return strings.HasPrefix(q, "SELECT")
-}
-
-func copyResponse(w http.ResponseWriter, resp *http.Response, body []byte) {
-	for k, v := range resp.Header {
-		for _, vv := range v {
-			w.Header().Add(k, vv)
-		}
-	}
-	w.WriteHeader(resp.StatusCode)
-	w.Write(body)
 }
 
 func extractDBID(path string) string {
@@ -184,24 +238,18 @@ func extractDBID(path string) string {
 	return ""
 }
 
-func forwardRequestWithBody(w http.ResponseWriter, r *http.Request, node *balancer.Node, body []byte) error {
+func writeResponse(w http.ResponseWriter, status int, header http.Header, body []byte) {
 
-	req, err := http.NewRequest(r.Method, node.URL+r.URL.Path, bytes.NewBuffer(body))
-	if err != nil {
-		return err
+	for k, v := range header {
+		for _, vv := range v {
+			w.Header().Add(k, vv)
+		}
 	}
 
-	req.Header = r.Header.Clone()
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
+	if status == 0 {
+		status = 200
 	}
-	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
-	copyResponse(w, resp, respBody)
-
-	return nil
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }

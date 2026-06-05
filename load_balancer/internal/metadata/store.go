@@ -139,3 +139,33 @@ func (s *Store) AddReplica(dbID string, nodeURL string) error {
 
 	return s.Save(record)
 }
+
+func (s *Store) GetAll() ([]DBRecord, error) {
+	rows, err := s.db.Query(`
+	SELECT db_id, primary_node_id, replica_node_ids, status, owner
+	FROM databases
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []DBRecord
+
+	for rows.Next() {
+		var r DBRecord
+		var replicas []byte
+
+		if err := rows.Scan(&r.DBID, &r.PrimaryNodeID, &replicas, &r.Status, &r.Owner); err != nil {
+			continue
+		}
+
+		if len(replicas) > 0 {
+			_ = json.Unmarshal(replicas, &r.ReplicaNodeIDs)
+		}
+
+		result = append(result, r)
+	}
+
+	return result, nil
+}
