@@ -504,7 +504,7 @@ export default function App() {
                     <span className="db-badge" style={{ color: statusColor(db.status) }}>● {db.status}</span>
                   </div>
                   <div className="db-mini-owner">owner: {db.owner}</div>
-                  <div className="db-mini-port">port: {db.port}</div>
+                  {/* <div className="db-mini-port">port: {db.port}</div> */}
                   <div className="db-mini-chart"><SparkLine data={dbCpu[db.db_id] || [0]} color="#10b981" height={35} /></div>
                   <ActionBtns db={db} />
                 </div>
@@ -517,7 +517,7 @@ export default function App() {
             <div className="section-title">All databases&nbsp;<span className="badge-count">{databases.length}</span></div>
             <div className="db-table-wrap">
               <table className="db-table">
-                <thead><tr><th>ID</th><th>Name</th><th>Owner</th><th>Port</th><th>Status</th><th>CPU</th><th>Actions</th></tr></thead>
+                <thead><tr><th>ID</th><th>Name</th><th>Owner</th><th>Status</th><th>CPU</th><th>Actions</th></tr></thead>
                 <tbody>
                   {databases.length === 0 && <tr><td colSpan={7} className="empty-td">Brak baz danych</td></tr>}
                   {databases.map((db) => (
@@ -588,7 +588,7 @@ export default function App() {
       {showCreate && (
         <CreateDBModal
           onClose={() => setShowCreate(false)}
-          onCreate={(db) => { notify(`Baza „${db.db_name}" utworzona na porcie ${db.port}`, "ok"); fetchAll(); }}
+          onCreate={(db) => { notify(`Baza „${db.db_name}" utworzona na pomyślnie.`, "ok"); fetchAll(); }}
         />
       )}
 

@@ -8,5 +8,15 @@
     "container_id": "66e2000a455d2254d68b7ad5f462e95d13b502cdca8635658da49e74bbb95d52",
     "container_name": "pg_62038b7c",
     "status": "stopped"
+  },
+  "0920e784": {
+    "db_id": "0920e784",
+    "db_name": "natalia",
+    "owner": "natalia",
+    "password": "natalia",
+    "port": 5501,
+    "container_id": "b6fcc87f9f9fda981e776b7ee80ecad1559b9a9cb628c217db946b04f18fe96a",
+    "container_name": "pg_0920e784",
+    "status": "exited"
   }
 }
