@@ -16,6 +16,13 @@ const (
 	LeastLoaded
 )
 
+type QueryType int
+
+const (
+	Read QueryType = iota
+	Write
+)
+
 type Node struct {
 	URL     string
 	Healthy bool
@@ -60,6 +67,15 @@ func (b *Balancer) GetNodePtr(n Node) *Node {
 		}
 	}
 	return nil
+}
+
+func (b *Balancer) GetNodes() []Node {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	out := make([]Node, len(b.nodes))
+	copy(out, b.nodes)
+	return out
 }
 
 func (b *Balancer) SelectNode() (Node, error) {
@@ -168,4 +184,42 @@ func (b *Balancer) bestByMetrics() (Node, error) {
 	}
 
 	return best, nil
+}
+
+func (b *Balancer) SelectNodeForQuery(
+	qt QueryType,
+	primary string,
+	replicas []string,
+) (Node, error) {
+
+	if qt == Write || len(replicas) == 0 {
+		return Node{URL: primary, Healthy: true}, nil
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	idx := b.counter % len(replicas)
+	b.counter++
+
+	return Node{
+		URL:     replicas[idx],
+		Healthy: true,
+	}, nil
+}
+
+func (b *Balancer) SelectReplica(replicaURLs []string) (*Node, error) {
+
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	for _, url := range replicaURLs {
+		for i := range b.nodes {
+			if b.nodes[i].URL == url && b.nodes[i].Healthy {
+				return &b.nodes[i], nil
+			}
+		}
+	}
+
+	return nil, errors.New("no healthy replica")
 }

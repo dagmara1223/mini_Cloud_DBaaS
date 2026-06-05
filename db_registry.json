@@ -7,6 +7,7 @@
     "port": 5500,
     "container_id": "66e2000a455d2254d68b7ad5f462e95d13b502cdca8635658da49e74bbb95d52",
     "container_name": "pg_62038b7c",
+<<<<<<< HEAD
     "status": "stopped"
   },
   "0920e784": {
@@ -18,5 +19,8 @@
     "container_id": "b6fcc87f9f9fda981e776b7ee80ecad1559b9a9cb628c217db946b04f18fe96a",
     "container_name": "pg_0920e784",
     "status": "exited"
+=======
+    "status": "missing"
+>>>>>>> ac24d652e06b5994911efad94856155184ea7749
   }
 }

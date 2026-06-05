@@ -403,6 +403,225 @@ def db_metrics(db_id: str):
 
     except Exception as e:
         return {"cpu_percent": 0}
+    
+# ---------------------- tworzenie repliki ----------------------
+
+@app.post("/databases/{db_id}/replica", status_code=201)
+def create_replica(db_id: str):
+    """
+    Tworzy read-only replikę dla istniejącej bazy (primary).
+    Wykorzystuje pg_basebackup + streaming replication.
+    """
+    primary = _get_db_or_404(db_id)
+
+    if primary.get("role") == "replica":
+        raise HTTPException(status_code=400, detail="Cannot replicate a replica")
+
+    replica_id = str(uuid.uuid4())[:8]
+    port = _next_free_port()
+    container_name = f"pg_replica_{replica_id}"
+
+    try:
+        # uruchamiamy pusty kontener
+        container = docker_client.containers.run(
+            POSTGRES_IMAGE,
+            name=container_name,
+            detach=True,
+            environment={
+                "POSTGRES_PASSWORD": primary["password"],
+            },
+            ports={"5432/tcp": port},
+        )
+
+        # TODO: w realnym systemie:
+        # - pg_basebackup z primary
+        # - recovery.conf / standby.signal
+        # - PRIMARY_CONNINFO
+
+    except docker.errors.APIError as e:
+        raise HTTPException(status_code=500, detail=f"Docker error: {e}")
+
+    db_registry[replica_id] = {
+        "db_id": replica_id,
+        "db_name": primary["db_name"],
+        "owner": primary["owner"],
+        "password": primary["password"],
+        "port": port,
+        "container_id": container.id,
+        "container_name": container_name,
+        "status": "running",
+        "role": "replica",
+        "primary_db_id": db_id,
+    }
+
+    _save_registry()
+
+    return {
+        "replica_id": replica_id,
+        "primary_db_id": db_id,
+        "port": port,
+        "status": "running",
+        "role": "replica",
+    }
+
+#---------------------- pozwol na replikacje  ----------------------
+@app.post("/databases/{db_id}/enable_replication")
+def enable_replication(db_id: str):
+    """
+    Konfiguruje primary do replikacji:
+    - wal_level=replica
+    - max_wal_senders
+    - tworzy usera replication
+    """
+    entry = _get_db_or_404(db_id)
+
+    if entry.get("role") == "replica":
+        raise HTTPException(status_code=400, detail="Replica cannot be primary")
+
+    try:
+        container = docker_client.containers.get(entry["container_id"])
+
+        # ustawienia postgres 
+        container.exec_run("echo \"wal_level=replica\" >> /var/lib/postgresql/data/postgresql.conf")
+        container.exec_run("echo \"max_wal_senders=5\" >> /var/lib/postgresql/data/postgresql.conf")
+
+        # user do replikacji
+        container.exec_run(
+            f'psql -U {entry["owner"]} -c "CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD \'replica_pass\';"'
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"status": "replication_enabled", "db_id": db_id}
+
+# ---------------------- read only query ----------------------
+
+@app.post("/databases/{db_id}/read_query")
+def execute_read_query(db_id: str, req: QueryRequest):
+    """
+    Endpoint tylko dla SELECT (używany przez LB dla replik).
+    """
+    entry = _get_db_or_404(db_id)
+
+    if entry.get("role") != "replica":
+        raise HTTPException(status_code=400, detail="Not a replica")
+
+    if not req.query.strip().lower().startswith("select"):
+        raise HTTPException(status_code=400, detail="Replica is read-only")
+
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            host="localhost",
+            port=entry["port"],
+            dbname=entry["db_name"],
+            user=entry["owner"],
+            password=entry["password"],
+            connect_timeout=5,
+        )
+
+        cur = conn.cursor()
+        cur.execute(req.query, req.params or [])
+
+        columns = [d[0] for d in cur.description]
+        rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+        return {"status": "ok", "rows": rows, "row_count": len(rows)}
+
+    except psycopg2.Error as e:
+        raise HTTPException(status_code=400, detail=f"SQL error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+#---------------------- lita replik ----------------------
+@app.get("/databases/{db_id}/replicas")
+def list_replicas(db_id: str):
+    """
+    Zwraca wszystkie repliki dla danej bazy primary.
+    """
+    _get_db_or_404(db_id)
+
+    replicas = [
+        v for v in db_registry.values()
+        if v.get("primary_db_id") == db_id
+    ]
+
+    return replicas
+
+#---------------------- promuj replikę----------------------
+@app.post("/databases/{db_id}/promote")
+def promote_replica(db_id: str):
+    """
+    Promuje replikę do primary (failover).
+    """
+    entry = _get_db_or_404(db_id)
+
+    if entry.get("role") != "replica":
+        raise HTTPException(status_code=400, detail="Not a replica")
+
+    try:
+        container = docker_client.containers.get(entry["container_id"])
+
+        # postgres promote
+        container.exec_run("pg_ctl promote -D /var/lib/postgresql/data")
+
+        entry["role"] = "primary"
+        entry["primary_db_id"] = None
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    _save_registry()
+
+    return {"status": "promoted", "db_id": db_id}
+
+# ---------------------- metryki replikacji ----------------------
+@app.get("/databases/{db_id}/replication_status")
+def replication_status(db_id: str):
+    """
+    Status replikacji (lag, rola, itp.)
+    """
+    entry = _get_db_or_404(db_id)
+
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            host="localhost",
+            port=entry["port"],
+            dbname=entry["db_name"],
+            user=entry["owner"],
+            password=entry["password"],
+        )
+
+        cur = conn.cursor()
+
+        # działa tylko dla primary
+        cur.execute("""
+            SELECT client_addr, state, sync_state
+            FROM pg_stat_replication;
+        """)
+
+        rows = cur.fetchall()
+
+        return {
+            "role": entry.get("role", "primary"),
+            "replicas": [
+                {
+                    "client_addr": r[0],
+                    "state": r[1],
+                    "sync_state": r[2],
+                } for r in rows
+            ]
+        }
+
+    except Exception:
+        return {"role": entry.get("role"), "replicas": []}
+
+    finally:
+        if conn:
+            conn.close()
 
 # uruchomienie ------------------------
 if __name__ == "__main__":
