@@ -17,7 +17,7 @@ ChartJS.register(LineElement, CategoryScale, LinearScale, PointElement, Filler, 
 
 // const API = "http://127.0.0.1:8000";
 // const HEADERS = { "X-API-Key": "dev-secret-change-me" };
-const API = "http://127.0.0.1:9000";
+const API = "http://localhost:9000";
 const getToken = () => localStorage.getItem("jwt_token");
 const saveToken = (t) => localStorage.setItem("jwt_token", t);
 const clearToken = () => localStorage.removeItem("jwt_token");

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/nkucht4/load_balancer/internal/balancer"
 	"github.com/nkucht4/load_balancer/internal/metadata"
@@ -30,11 +31,15 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[PROXY] %s %s", r.Method, r.URL.Path)
 
 	switch {
-	case r.Method == "POST" && r.URL.Path == "/databases":
+	case r.Method == http.MethodOptions:
+		w.WriteHeader(http.StatusNoContent)
+		return
+
+	case r.Method == http.MethodPost && r.URL.Path == "/databases":
 		handleCreateDB(w, r)
 		return
 
-	case r.Method == "GET" && r.URL.Path == "/databases":
+	case r.Method == http.MethodGet && r.URL.Path == "/databases":
 		handleListAllDBs(w, r)
 		return
 	}
@@ -60,7 +65,12 @@ func handleCreateDB(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	r.Body = io.NopCloser(bytes.NewBuffer(body))
 
-	req, _ := http.NewRequest("POST", node.URL+"/databases", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, node.URL+"/databases", bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
 	req.Header = r.Header.Clone()
 	req.ContentLength = int64(len(body))
 
@@ -75,7 +85,7 @@ func handleCreateDB(w http.ResponseWriter, r *http.Request) {
 	respBody, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode >= 400 {
-		writeResponse(w, resp.StatusCode, resp.Header, respBody)
+		writeResponse(w, r, resp.StatusCode, resp.Header, respBody)
 		return
 	}
 
@@ -99,7 +109,7 @@ func handleCreateDB(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[REGISTER] db=%s owner=%s node=%s", dbID, user, node.URL)
 
-	writeResponse(w, resp.StatusCode, resp.Header, respBody)
+	writeResponse(w, r, resp.StatusCode, resp.Header, respBody)
 }
 
 // ========================= LIST DBs =========================
@@ -129,7 +139,7 @@ func handleListAllDBs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
+	w.WriteHeader(http.StatusOK)
 
 	_ = json.NewEncoder(w).Encode(filtered)
 
@@ -185,10 +195,10 @@ func handleDBRequest(w http.ResponseWriter, r *http.Request, dbID string) {
 
 	respBody, _ := io.ReadAll(resp.Body)
 
-	writeResponse(w, resp.StatusCode, resp.Header, respBody)
+	writeResponse(w, r, resp.StatusCode, resp.Header, respBody)
 }
 
-// ========================= FORWARD (GENERIC) =========================
+// ========================= FORWARD =========================
 
 func forwardToNode(w http.ResponseWriter, r *http.Request) {
 
@@ -220,7 +230,21 @@ func forwardToNode(w http.ResponseWriter, r *http.Request) {
 
 	respBody, _ := io.ReadAll(resp.Body)
 
-	writeResponse(w, resp.StatusCode, resp.Header, respBody)
+	writeResponse(w, r, resp.StatusCode, resp.Header, respBody)
+}
+
+// ========================= CORS =========================
+
+func addCORS(w http.ResponseWriter, r *http.Request) {
+	origin := r.Header.Get("Origin")
+	if origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Vary", "Origin")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	}
+
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 }
 
 // ========================= UTIL =========================
@@ -238,7 +262,7 @@ func extractDBID(path string) string {
 	return ""
 }
 
-func writeResponse(w http.ResponseWriter, status int, header http.Header, body []byte) {
+func writeResponse(w http.ResponseWriter, r *http.Request, status int, header http.Header, body []byte) {
 
 	for k, v := range header {
 		for _, vv := range v {
@@ -252,4 +276,49 @@ func writeResponse(w http.ResponseWriter, status int, header http.Header, body [
 
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+func HandleClusterMetrics(lb *balancer.Balancer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+
+		nodes := lb.GetNodes()
+
+		client := &http.Client{Timeout: 2 * time.Second}
+
+		results := make([]any, 0, len(nodes))
+
+		for _, n := range nodes {
+
+			resp, err := client.Get(n.URL + "/metrics")
+			if err != nil {
+				results = append(results, map[string]any{
+					"node": n.URL,
+					"error": "unreachable",
+				})
+				continue
+			}
+
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			var m map[string]any
+			_ = json.Unmarshal(body, &m)
+
+			results = append(results, map[string]any{
+				"node":    n.URL,
+				"metrics": m,
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(results)
+	}
+}
+
+func HandleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status": "ok",
+	})
 }

@@ -50,8 +50,23 @@ func readBody(r *http.Request) ([]byte, *http.Request) {
 func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
-		// allow login without auth
-		if r.URL.Path == "/login" {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Vary", "Origin")
+		}
+
+		// preflight MUST stop here but still return CORS headers
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		// public routes (NO auth)
+		if r.URL.Path == "/login" || r.URL.Path == "/health" || r.URL.Path == "/metrics" {
 			next(w, r)
 			return
 		}
@@ -86,9 +101,7 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// attach user to context
 		ctx := context.WithValue(r.Context(), userKey, user)
-
 		next(w, r.WithContext(ctx))
 	}
 }
