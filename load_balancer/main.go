@@ -10,6 +10,17 @@ import (
 	"github.com/nkucht4/load_balancer/internal/autoscaler"
 )
 
+func corsMiddleware(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			if r.Method == "OPTIONS" { w.WriteHeader(204); return }
+			next.ServeHTTP(w, r)
+		})
+	}
+	// ---------------
+
 func main() {
 	lb := balancer.New([]string{
 		//"http://192.168.8.119:8000",
@@ -36,6 +47,19 @@ func main() {
 	http.HandleFunc("/login", proxy.LoginHandler)
 	http.HandleFunc("/", proxy.AuthMiddleware(proxy.Handle))
 
+	handler := corsMiddleware(http.DefaultServeMux)
+
 	log.Println("LB running on :9000")
-	log.Fatal(http.ListenAndServe(":9000", nil))
+	log.Fatal(http.ListenAndServe(":9000", handler))
+
+	// http.HandleFunc("/login", proxy.LoginHandler)
+	// http.HandleFunc("/", proxy.AuthMiddleware(proxy.Handle))
+
+	// added for frontend ------------
+	// handler := corsMiddleware(http.DefaultServeMux)
+	// log.Fatal(http.ListenAndServe(":9000", handler))
+
+	// log.Println("LB running on :9000")
+	// //log.Fatal(http.ListenAndServe(":9000", nil))
+	// log.Fatal(http.ListenAndServe(":9000", corsMiddleware(http.DefaultServeMux)))
 }
