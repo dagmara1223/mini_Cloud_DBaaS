@@ -57,6 +57,6 @@
     "port": 5503,
     "container_id": "dcc54d5978b5029059034d4bc431579fdbf93fa9d2f2f91fc2258547b0804c42",
     "container_name": "pg_5d3ad794",
-    "status": "running"
+    "status": "stopped"
   }
 }

@@ -3,6 +3,7 @@ package metadata
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -176,4 +177,22 @@ func (s *Store) UpdateStatus(dbID, status string) (sql.Result, error) {
         SET status = ?
         WHERE db_id = ?
     `, status, dbID)
+}
+
+func (s *Store) Delete(dbID string) error {
+	res, err := s.db.Exec(`DELETE FROM databases WHERE db_id = ?`, dbID)
+	if err != nil {
+		return err
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rows == 0 {
+		return fmt.Errorf("not found")
+	}
+
+	return nil
 }

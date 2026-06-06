@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/nkucht4/load_balancer/internal/balancer"
 	"github.com/nkucht4/load_balancer/internal/metadata"
 )
@@ -20,8 +22,8 @@ func SetBalancer(b *balancer.Balancer) { lb = b }
 func SetStore(s *metadata.Store)       { store = s }
 
 type StatusUpdate struct {
-    DBID   string `json:"db_id"`
-    Status string `json:"status"`
+	DBID   string `json:"db_id"`
+	Status string `json:"status"`
 }
 
 // ========================= ENTRY =========================
@@ -29,22 +31,26 @@ type StatusUpdate struct {
 func Handle(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[PROXY] %s %s", r.Method, r.URL.Path)
 
+	// WebSocket upgrade must be handled first
+	if isWebSocketRequest(r) {
+		handleWebSocket(w, r)
+		return
+	}
+
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
-	// ---------- cluster endpoints ----------
-	if r.URL.Path == "/metrics" {
+	switch r.URL.Path {
+	case "/metrics":
 		HandleClusterMetrics(lb)(w, r)
 		return
-	}
-	if r.URL.Path == "/health" {
+	case "/health":
 		HandleHealth(w, r)
 		return
 	}
 
-	// ---------- database collection ----------
 	if r.Method == http.MethodPost && r.URL.Path == "/databases" {
 		handleCreateDB(w, r)
 		return
@@ -55,18 +61,15 @@ func Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ---------- db actions ----------
 	if handleDBActions(w, r) {
 		return
 	}
 
-	// ---------- db resource ----------
 	if dbID, ok := extractDBIDStrict(r.URL.Path); ok {
 		handleDBRequest(w, r, dbID)
 		return
 	}
 
-	// ---------- fallback ----------
 	forwardToNode(w, r)
 }
 
@@ -85,48 +88,54 @@ func handleDBActions(w http.ResponseWriter, r *http.Request) bool {
 	dbID := parts[1]
 	action := parts[2]
 
-	var suffix string
-
 	switch action {
 	case "start":
-		suffix = "/start"
+		forwardDBAction(w, r, dbID, "/start")
+		return true
 	case "stop":
-		suffix = "/stop"
+		forwardDBAction(w, r, dbID, "/stop")
+		return true
 	case "delete":
-		suffix = "/delete"
+		record, err := store.Get(dbID)
+		if err != nil {
+			http.Error(w, "db not found", 404)
+			return true
+		}
+
+		req, _ := http.NewRequest(http.MethodDelete,
+			record.PrimaryNodeID+"/databases/"+dbID, nil)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil || resp.StatusCode >= 400 {
+			http.Error(w, "node delete failed", 502)
+			return true
+		}
+		defer resp.Body.Close()
+
+		if err := store.Delete(dbID); err != nil {
+			http.Error(w, "store delete failed", 500)
+			return true
+		}
+
+		w.WriteHeader(200)
+		w.Write([]byte(`{"status":"deleted"}`))
+		return true
+
 	case "metrics":
-		suffix = "/metrics"
-	default:
-		return false
+		forwardDBAction(w, r, dbID, "/metrics")
+		return true
 	}
 
-	forwardDBAction(w, r, dbID, suffix)
-	return true
+	return false
 }
 
 // ========================= CREATE DB =========================
 
 func handleCreateDB(w http.ResponseWriter, r *http.Request) {
-	node, err := lb.SelectNode()
-	if err != nil {
-		http.Error(w, "no nodes", 500)
-		return
-	}
+	node := selectAliveNode()
 
-	if !isNodeAlive(node.URL) {
-		log.Printf("[WARN] dead node from balancer: %s", node.URL)
-
-		// spróbuj ponownie (prosty retry)
-		nodes := lb.GetNodes()
-		for _, n := range nodes {
-			if isNodeAlive(n.URL) {
-				node = n
-				break
-			}
-		}
-	}
-	if err != nil {
-		http.Error(w, "no nodes", 500)
+	if node.URL == "" {
+		http.Error(w, "no alive nodes", 500)
 		return
 	}
 
@@ -156,7 +165,7 @@ func handleCreateDB(w http.ResponseWriter, r *http.Request) {
 	dbID, _ := data["db_id"].(string)
 	user, _ := r.Context().Value(userKey).(string)
 
-	store.Save(metadata.DBRecord{
+	_ = store.Save(metadata.DBRecord{
 		DBID:          dbID,
 		PrimaryNodeID: node.URL,
 		Status:        "running",
@@ -166,7 +175,7 @@ func handleCreateDB(w http.ResponseWriter, r *http.Request) {
 	writeResponse(w, resp.StatusCode, resp.Header, respBody)
 }
 
-// ========================= LIST DBs =========================
+// ========================= LIST =========================
 
 func handleListAllDBs(w http.ResponseWriter, r *http.Request) {
 	user, _ := r.Context().Value(userKey).(string)
@@ -181,7 +190,7 @@ func handleListAllDBs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(out)
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 // ========================= DB REQUEST =========================
@@ -200,14 +209,10 @@ func handleDBRequest(w http.ResponseWriter, r *http.Request, dbID string) {
 	}
 
 	body, _ := io.ReadAll(r.Body)
-
-	nodeURL := record.PrimaryNodeID
-
-	// IMPORTANT: do NOT block request if replica missing DB
-	forward(w, r, nodeURL+r.URL.Path, body)
+	forward(w, r, record.PrimaryNodeID+r.URL.Path, body)
 }
 
-// ========================= DB ACTION FORWARD =========================
+// ========================= FORWARD ACTION =========================
 
 func forwardDBAction(w http.ResponseWriter, r *http.Request, dbID, suffix string) {
 	record, err := store.Get(dbID)
@@ -223,8 +228,20 @@ func forwardDBAction(w http.ResponseWriter, r *http.Request, dbID, suffix string
 	}
 
 	body, _ := io.ReadAll(r.Body)
-
 	forward(w, r, record.PrimaryNodeID+"/databases/"+dbID+suffix, body)
+}
+
+// ========================= NODE SELECTION =========================
+
+func selectAliveNode() balancer.Node {
+	nodes := lb.GetNodes()
+
+	for _, n := range nodes {
+		if isNodeAlive(n.URL) {
+			return n
+		}
+	}
+	return balancer.Node{}
 }
 
 // ========================= FORWARD =========================
@@ -248,31 +265,14 @@ func forward(w http.ResponseWriter, r *http.Request, url string, body []byte) {
 // ========================= FALLBACK =========================
 
 func forwardToNode(w http.ResponseWriter, r *http.Request) {
-	node, err := lb.SelectNode()
-	if err != nil {
-		http.Error(w, "no nodes", 500)
-		return
-	}
+	node := selectAliveNode()
 
-	if !isNodeAlive(node.URL) {
-		log.Printf("[WARN] dead node from balancer: %s", node.URL)
-
-		// spróbuj ponownie (prosty retry)
-		nodes := lb.GetNodes()
-		for _, n := range nodes {
-			if isNodeAlive(n.URL) {
-				node = n
-				break
-			}
-		}
-	}
-	if err != nil {
-		http.Error(w, "no nodes", 500)
+	if node.URL == "" {
+		http.Error(w, "no alive nodes", 500)
 		return
 	}
 
 	body, _ := io.ReadAll(r.Body)
-
 	forward(w, r, node.URL+r.URL.Path, body)
 }
 
@@ -304,6 +304,13 @@ func writeResponse(w http.ResponseWriter, status int, header http.Header, body [
 
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+// ========================= HEALTH =========================
+
+func HandleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 // ========================= METRICS =========================
@@ -338,16 +345,11 @@ func HandleClusterMetrics(lb *balancer.Balancer) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(results)
+		_ = json.NewEncoder(w).Encode(results)
 	}
 }
 
-// ========================= HEALTH =========================
-
-func HandleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
+// ========================= NODE HEALTH =========================
 
 func isNodeAlive(url string) bool {
 	client := &http.Client{Timeout: 800 * time.Millisecond}
@@ -361,21 +363,61 @@ func isNodeAlive(url string) bool {
 	return resp.StatusCode == 200
 }
 
-func UpdateStatus(store *metadata.Store) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
-        var req StatusUpdate
+// ========================= WEBSOCKETS =========================
 
-        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-            http.Error(w, "invalid json", 400)
-            return
-        }
+func isWebSocketRequest(r *http.Request) bool {
+	return strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") &&
+		strings.ToLower(r.Header.Get("Upgrade")) == "websocket"
+}
 
-        _, err := store.UpdateStatus(req.DBID, req.Status)
-        if err != nil {
-            http.Error(w, err.Error(), 500)
-            return
-        }
+func handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	node := selectAliveNode()
+	if node.URL == "" {
+		http.Error(w, "no alive nodes", 500)
+		return
+	}
 
-        w.WriteHeader(200)
-    }
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "hijacking not supported", 500)
+		return
+	}
+
+	clientConn, _, err := hj.Hijack()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	targetURL := strings.Replace(node.URL, "http", "ws", 1) + r.URL.Path
+	if r.URL.RawQuery != "" {
+		targetURL += "?" + r.URL.RawQuery
+	}
+
+	dialer := websocket.Dialer{
+		Proxy: http.ProxyFromEnvironment,
+	}
+
+	backendConn, _, err := dialer.Dial(targetURL, r.Header)
+	if err != nil {
+		_ = clientConn.Close()
+		return
+	}
+
+	errCh := make(chan error, 2)
+
+	go func() {
+		_, err := io.Copy(clientConn, backendConn.UnderlyingConn())
+		errCh <- err
+	}()
+
+	go func() {
+		_, err := io.Copy(backendConn.UnderlyingConn(), clientConn)
+		errCh <- err
+	}()
+
+	<-errCh
+
+	_ = clientConn.Close()
+	_ = backendConn.Close()
 }
