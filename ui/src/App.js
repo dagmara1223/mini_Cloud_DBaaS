@@ -15,8 +15,17 @@ import "./App.css";
 
 ChartJS.register(LineElement, CategoryScale, LinearScale, PointElement, Filler, Tooltip);
 
-const API = "http://127.0.0.1:8000";
-const HEADERS = { "X-API-Key": "dev-secret-change-me" };
+// const API = "http://127.0.0.1:8000";
+// const HEADERS = { "X-API-Key": "dev-secret-change-me" };
+const API = "http://localhost:9000";
+const getToken = () => localStorage.getItem("jwt_token");
+const saveToken = (t) => localStorage.setItem("jwt_token", t);
+const clearToken = () => localStorage.removeItem("jwt_token");
+const authHeaders = (extra = {}) => ({
+  "Authorization": `Bearer ${getToken()}`,
+  "Content-Type": "application/json",
+  ...extra,
+});
 
 const fmt = (n) => (n ?? 0).toFixed(1);
 const statusColor = (s) =>
@@ -79,6 +88,58 @@ const Icon = {
   run: (<svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
     <polygon points="5 3 19 12 5 21 5 3" /></svg>),
 };
+
+function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  const submit = async () => {
+    if (!username || !password) { setErr("Wypełnij wszystkie pola."); return; }
+    setLoading(true); setErr("");
+    try {
+      const res = await fetch(`${API}/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!res.ok) throw new Error("Nieprawidłowy login lub hasło.");
+      const data = await res.json();
+      saveToken(data.token);
+      onLogin(username);
+    } catch (e) { setErr(e.message); }
+    finally { setLoading(false); }
+  };
+
+  const handleKey = (e) => { if (e.key === "Enter") submit(); };
+
+  return (
+    <div className="login-bg">
+      <div className="login-card">
+        <div className="login-logo">
+          <span className="login-logo-icon">☁</span>
+          <div>
+            <div className="login-title">MiniCloud</div>
+            <div className="login-sub">DBaaS Console</div>
+          </div>
+        </div>
+        <div className="login-divider" />
+        <div className="login-form">
+          {err && <div className="modal-err">{err}</div>}
+          <label className="inp-label">Username</label>
+          <input className="inp" placeholder="admin" value={username} onChange={(e) => setUsername(e.target.value)} onKeyDown={handleKey} autoFocus />
+          <label className="inp-label">Password</label>
+          <input className="inp" type="password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={handleKey} />
+          <button className="btn-primary login-btn" onClick={submit} disabled={loading}>
+            {loading ? "Logowanie..." : "Zaloguj"}
+          </button>
+        </div>
+        <div className="login-hint">Domyślne dane: <code>admin</code> / <code>password</code></div>
+      </div>
+    </div>
+  );
+}
 
 function SparkLine({ data, color = "#0ea5e9", height = 60 }) {
   const labels = data.map((_, i) => i);
@@ -148,7 +209,7 @@ function SQLPanel({ databases }) {
     try {
       const res = await fetch(`${API}/databases/${selectedDb}/query`, {
         method: "POST",
-        headers: { ...HEADERS, "Content-Type": "application/json" },
+        headers: authHeaders(),
         body: JSON.stringify({ query: query.trim() }),
       });
       const data = await res.json();
@@ -264,7 +325,7 @@ function CreateDBModal({ onClose, onCreate }) {
     try {
       const res = await fetch(`${API}/databases`, {
         method: "POST",
-        headers: { ...HEADERS, "Content-Type": "application/json" },
+        headers: authHeaders(),
         body: JSON.stringify(form),
       });
       if (!res.ok) throw new Error((await res.json()).detail);
@@ -329,6 +390,9 @@ function Toast({ msg, type, onDone }) {
 
 // glowna aplikacja
 export default function App() {
+  const [user, setUser] = useState(() => getToken() ? "admin" : null);
+  const handleLogin = (username) => setUser(username);
+  const handleLogout = () => { clearToken(); setUser(null); };
   const [health, setHealth] = useState(null);
   const [metrics, setMetrics] = useState(null);
   const [databases, setDatabases] = useState([]);
@@ -346,10 +410,15 @@ export default function App() {
   const fetchAll = useCallback(async () => {
     try {
       const [hRes, mRes, dbRes] = await Promise.all([
-        fetch(`${API}/health`, { headers: HEADERS }),
-        fetch(`${API}/metrics`, { headers: HEADERS }),
-        fetch(`${API}/databases`, { headers: HEADERS }),
+        fetch(`${API}/health`, { headers: authHeaders() }),
+        fetch(`${API}/metrics`, { headers: authHeaders() }),
+        fetch(`${API}/databases`, { headers: authHeaders() }),
       ]);
+      if (hRes.status === 401 || mRes.status === 401 || dbRes.status === 401) {
+        handleLogout();
+        notify("Sesja wygasła. Zaloguj się ponownie.", "err");
+        return;
+      }
       if (hRes.ok) setHealth(await hRes.json());
       if (mRes.ok) {
         const m = await mRes.json();
@@ -358,22 +427,33 @@ export default function App() {
         setMemHistory((p) => [...p.slice(-40), m.mem_percent]);
       }
       if (dbRes.ok) {
-        const dbs = await dbRes.json();
-        setDatabases(dbs);
-        // per-db CPU
-        for (const db of dbs) {
-          try {
-            const r = await fetch(`${API}/databases/${db.db_id}/metrics`, { headers: HEADERS });
-            if (r.ok) {
-              const d = await r.json();
-              setDbCpu((prev) => ({
-                ...prev,
-                [db.db_id]: [...(prev[db.db_id] || []).slice(-20), d.cpu_percent],
-              }));
-            }
-          } catch { /* ignoruj */ }
-        }
+  const dbs = await dbRes.json();
+  setDatabases(dbs);
+
+  const runningDBs = dbs.filter(db => db.status === "running");
+
+  for (const db of runningDBs) {
+    try {
+      const r = await fetch(`${API}/databases/${db.db_id}/metrics`, {
+        headers: authHeaders(),
+      });
+
+      if (r.ok) {
+        const d = await r.json();
+
+        setDbCpu((prev) => ({
+          ...prev,
+          [db.db_id]: [
+            ...(prev[db.db_id] || []).slice(-20),
+            d.cpu_percent,
+          ],
+        }));
       }
+    } catch {
+      // ignore
+    }
+  }
+}
       setLastUpdate(new Date());
     } catch { /* serwer offline */ }
   }, []);
@@ -391,7 +471,7 @@ export default function App() {
       ? `${API}/databases/${db_id}`
       : `${API}/databases/${db_id}/${action}`;
     try {
-      const res = await fetch(url, { method, headers: HEADERS });
+      const res = await fetch(url, { method, headers: authHeaders() });
       if (!res.ok) throw new Error((await res.json()).detail);
       notify(
         action === "delete" ? "Baza usunięta" :
@@ -417,7 +497,7 @@ export default function App() {
       <button className="act-btn red" onClick={() => askDelete(db)} title="Delete">{Icon.trash}</button>
     </div>
   );
-
+  if (!user) return <LoginScreen onLogin={handleLogin} />;
   return (
     <div className="shell">
       {/* sidebar */}
@@ -472,6 +552,13 @@ export default function App() {
             )}
           </div>
           <div className="topbar-right">
+            <div className="user-chip">
+              <span className="user-dot">●</span>
+              <span className="user-name">{user}</span>
+            </div>
+            <button className="btn-ghost btn-logout" onClick={handleLogout}>
+              Wyloguj
+            </button>
             <button className="btn-primary" onClick={() => setShowCreate(true)}>
               {Icon.plus}&nbsp;New Database
             </button>
@@ -504,7 +591,7 @@ export default function App() {
                     <span className="db-badge" style={{ color: statusColor(db.status) }}>● {db.status}</span>
                   </div>
                   <div className="db-mini-owner">owner: {db.owner}</div>
-                  {/* <div className="db-mini-port">port: {db.port}</div> */}
+                  <div className="db-mini-port">port: {db.port}</div>
                   <div className="db-mini-chart"><SparkLine data={dbCpu[db.db_id] || [0]} color="#10b981" height={35} /></div>
                   <ActionBtns db={db} />
                 </div>
@@ -517,7 +604,7 @@ export default function App() {
             <div className="section-title">All databases&nbsp;<span className="badge-count">{databases.length}</span></div>
             <div className="db-table-wrap">
               <table className="db-table">
-                <thead><tr><th>ID</th><th>Name</th><th>Owner</th><th>Status</th><th>CPU</th><th>Actions</th></tr></thead>
+                <thead><tr><th>ID</th><th>Name</th><th>Owner</th><th>Port</th><th>Status</th><th>CPU</th><th>Actions</th></tr></thead>
                 <tbody>
                   {databases.length === 0 && <tr><td colSpan={7} className="empty-td">Brak baz danych</td></tr>}
                   {databases.map((db) => (
@@ -588,7 +675,7 @@ export default function App() {
       {showCreate && (
         <CreateDBModal
           onClose={() => setShowCreate(false)}
-          onCreate={(db) => { notify(`Baza „${db.db_name}" utworzona na pomyślnie.`, "ok"); fetchAll(); }}
+          onCreate={(db) => { notify(`Baza „${db.db_name}" utworzona na porcie ${db.port}`, "ok"); fetchAll(); }}
         />
       )}
 

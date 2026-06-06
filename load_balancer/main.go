@@ -11,15 +11,52 @@ import (
 )
 
 func corsMiddleware(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-			if r.Method == "OPTIONS" { w.WriteHeader(204); return }
-			next.ServeHTTP(w, r)
-		})
-	}
-	// ---------------
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		allowedOrigin := "http://localhost:3000" // CHANGE to your frontend URL
+
+		origin := r.Header.Get("Origin")
+
+		// Only allow known origin
+		if origin == allowedOrigin {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Vary", "Origin")
+		}
+
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
 
 func main() {
 	lb := balancer.New([]string{
@@ -30,7 +67,7 @@ func main() {
 	}, balancer.RoundRobin)
 
 	// START METRICS
-	go lb.StartMetricsRefresh()
+	//go lb.StartMetricsRefresh()
 
 	// SQLite file
 	store, err := metadata.New("metadata.db")
@@ -45,9 +82,12 @@ func main() {
 	proxy.SetStore(store)
 
 	http.HandleFunc("/login", proxy.LoginHandler)
+	http.HandleFunc("/metrics", proxy.AuthMiddleware(proxy.HandleClusterMetrics(lb)))
+	http.HandleFunc("/health", proxy.AuthMiddleware(proxy.HandleHealth))
 	http.HandleFunc("/", proxy.AuthMiddleware(proxy.Handle))
 
-	handler := corsMiddleware(http.DefaultServeMux)
+	handler := withCORS(http.DefaultServeMux)
+	log.Fatal(http.ListenAndServe(":9000", handler))
 
 	log.Println("LB running on :9000")
 	log.Fatal(http.ListenAndServe(":9000", handler))

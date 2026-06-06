@@ -1,26 +1,22 @@
 {
-  "62038b7c": {
-    "db_id": "62038b7c",
-    "db_name": "dagmara",
-    "owner": "dagmara",
-    "password": "dagmara",
+  "5fa05836": {
+    "db_id": "5fa05836",
+    "db_name": "cat",
+    "owner": "aa",
+    "password": "aaa",
     "port": 5500,
-    "container_id": "66e2000a455d2254d68b7ad5f462e95d13b502cdca8635658da49e74bbb95d52",
-    "container_name": "pg_62038b7c",
-<<<<<<< HEAD
-    "status": "stopped"
+    "container_id": "f29b9cf272614a88d1d73229ce1da28c89b2ad8f64114c8c0fd6aa99eeacbb75",
+    "container_name": "pg_5fa05836",
+    "status": "running"
   },
-  "0920e784": {
-    "db_id": "0920e784",
-    "db_name": "natalia",
-    "owner": "natalia",
-    "password": "natalia",
+  "7534282d": {
+    "db_id": "7534282d",
+    "db_name": "cat",
+    "owner": "admin",
+    "password": "aaa",
     "port": 5501,
-    "container_id": "b6fcc87f9f9fda981e776b7ee80ecad1559b9a9cb628c217db946b04f18fe96a",
-    "container_name": "pg_0920e784",
-    "status": "exited"
-=======
-    "status": "missing"
->>>>>>> ac24d652e06b5994911efad94856155184ea7749
+    "container_id": "25fa7215ae85528b142b5ed0a2a78cae051f9b0c5d5377f56c3a0f454d5af8ee",
+    "container_name": "pg_7534282d",
+    "status": "running"
   }
 }

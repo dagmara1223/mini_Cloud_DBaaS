@@ -50,6 +50,10 @@ import psutil
 import uuid
 import os
 
+import logging
+log = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG)
+
 # token 
 from dotenv import load_dotenv
 load_dotenv()
@@ -108,7 +112,7 @@ def _load_registry() -> dict:
 app = FastAPI(
     title="Node Agent",
     version="1.0.0",
-    dependencies=[Depends(verify_key)]
+    #dependencies=[Depends(verify_key)]
 )
 
 app.add_middleware(
@@ -195,7 +199,15 @@ def create_database(req: CreateDBRequest):
             ports={"5432/tcp": port},
         )
     except docker.errors.APIError as e:
-        raise HTTPException(status_code=500, detail=f"Docker error: {e}")
+        log.error("Docker API error", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": str(e),
+                "status": getattr(e, "status_code", None),
+                "explanation": getattr(e, "explanation", None),
+            },
+        )
 
     db_registry[db_id] = {
         "db_id": db_id,
@@ -623,7 +635,57 @@ def replication_status(db_id: str):
         if conn:
             conn.close()
 
+import threading
+import time
+
+def docker_sync_loop(interval: int = 5):
+    """
+    Background job:
+    - co N sekund sprawdza status kontenerów w Dockerze
+    - aktualizuje db_registry
+    - zapisuje do pliku JSON
+    """
+    global db_registry
+
+    while True:
+        changed = False
+
+        for db_id, entry in list(db_registry.items()):
+            try:
+                container = docker_client.containers.get(entry["container_id"])
+                new_status = container.status  # running / exited / paused
+
+                if entry.get("status") != new_status:
+                    entry["status"] = new_status
+                    changed = True
+
+            except docker.errors.NotFound:
+                if entry.get("status") != "missing":
+                    entry["status"] = "missing"
+                    changed = True
+
+        if changed:
+            _save_registry()
+
+        time.sleep(interval)
+
+@app.on_event("startup")
+def start_docker_sync():
+    thread = threading.Thread(
+        target=docker_sync_loop,
+        args=(5,),
+        daemon=True
+    )
+    thread.start()
+
 # uruchomienie ------------------------
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--host", type=str, default="0.0.0.0")
+    args = parser.parse_args()
+
+    uvicorn.run(app, host=args.host, port=args.port)

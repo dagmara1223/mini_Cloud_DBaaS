@@ -3,6 +3,7 @@ package metadata
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -12,11 +13,13 @@ type Store struct {
 }
 
 type DBRecord struct {
-	DBID           string
-	PrimaryNodeID  string
-	ReplicaNodeIDs []string
-	Status         string
-	Owner          string
+    DBID           string   `json:"db_id"`
+    DBName         string   `json:"db_name"`
+    Port           int      `json:"port"`
+    PrimaryNodeID  string   `json:"primary_node_id"`
+    ReplicaNodeIDs []string `json:"replica_node_ids"`
+    Status         string   `json:"status"`
+    Owner          string   `json:"owner"`
 }
 
 func New(path string) (*Store, error) {
@@ -38,12 +41,14 @@ func New(path string) (*Store, error) {
 
 func (s *Store) initSchema() error {
 	_, err := s.db.Exec(`
-	CREATE TABLE IF NOT EXISTS databases (
+		CREATE TABLE IF NOT EXISTS databases (
 		db_id TEXT PRIMARY KEY,
 		primary_node_id TEXT,
 		replica_node_ids TEXT,
 		status TEXT,
-		owner TEXT
+		owner TEXT,
+		db_name TEXT,
+		port INTEGER
 	);
 	`)
 	return err
@@ -138,4 +143,60 @@ func (s *Store) AddReplica(dbID string, nodeURL string) error {
 	record.ReplicaNodeIDs = append(record.ReplicaNodeIDs, nodeURL)
 
 	return s.Save(record)
+}
+
+func (s *Store) GetAll() ([]DBRecord, error) {
+	rows, err := s.db.Query(`
+	SELECT db_id, primary_node_id, replica_node_ids, status, owner
+	FROM databases
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []DBRecord
+
+	for rows.Next() {
+		var r DBRecord
+		var replicas []byte
+
+		if err := rows.Scan(&r.DBID, &r.PrimaryNodeID, &replicas, &r.Status, &r.Owner); err != nil {
+			continue
+		}
+
+		if len(replicas) > 0 {
+			_ = json.Unmarshal(replicas, &r.ReplicaNodeIDs)
+		}
+
+		result = append(result, r)
+	}
+
+	return result, nil
+}
+
+func (s *Store) UpdateStatus(dbID, status string) (sql.Result, error) {
+    return s.db.Exec(`
+        UPDATE databases
+        SET status = ?
+        WHERE db_id = ?
+    `, status, dbID)
+}
+
+func (s *Store) Delete(dbID string) error {
+	res, err := s.db.Exec(`DELETE FROM databases WHERE db_id = ?`, dbID)
+	if err != nil {
+		return err
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rows == 0 {
+		return fmt.Errorf("not found")
+	}
+
+	return nil
 }
