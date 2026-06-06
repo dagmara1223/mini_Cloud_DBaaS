@@ -60,23 +60,20 @@ func withCORS(next http.Handler) http.Handler {
 
 func main() {
 	lb := balancer.New([]string{
-		//"http://192.168.8.119:8000",
-		//"http://192.168.8.117:8000",
-		"http://localhost:8001",
-		"http://localhost:8002",
+		// "http://localhost:8001",
+		// "http://localhost:8002",
+		"http://localhost:8000",
 	}, balancer.RoundRobin)
 
-	// START METRICS
-	//go lb.StartMetricsRefresh()
+	go lb.StartMetricsRefresh()
 
-	// SQLite file
 	store, err := metadata.New("metadata.db")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	autoscaler := autoscaler.New(lb, store, 0.7)
-	go autoscaler.Start()
+	a := autoscaler.New(lb, store, 0.7)
+	go a.Start()
 
 	proxy.SetBalancer(lb)
 	proxy.SetStore(store)
@@ -86,20 +83,51 @@ func main() {
 	http.HandleFunc("/health", proxy.AuthMiddleware(proxy.HandleHealth))
 	http.HandleFunc("/", proxy.AuthMiddleware(proxy.Handle))
 
-	handler := withCORS(http.DefaultServeMux)
-	log.Fatal(http.ListenAndServe(":9000", handler))
-
 	log.Println("LB running on :9000")
-	log.Fatal(http.ListenAndServe(":9000", handler))
-
-	// http.HandleFunc("/login", proxy.LoginHandler)
-	// http.HandleFunc("/", proxy.AuthMiddleware(proxy.Handle))
-
-	// added for frontend ------------
-	// handler := corsMiddleware(http.DefaultServeMux)
-	// log.Fatal(http.ListenAndServe(":9000", handler))
-
-	// log.Println("LB running on :9000")
-	// //log.Fatal(http.ListenAndServe(":9000", nil))
-	// log.Fatal(http.ListenAndServe(":9000", corsMiddleware(http.DefaultServeMux)))
+	log.Fatal(http.ListenAndServe(":9000", withCORS(http.DefaultServeMux)))
 }
+// func main() {
+// 	lb := balancer.New([]string{
+// 		//"http://192.168.8.119:8000",
+// 		//"http://192.168.8.117:8000",
+// 		"http://localhost:8001",
+// 		"http://localhost:8002",
+// 	}, balancer.RoundRobin)
+
+// 	// START METRICS
+// 	//go lb.StartMetricsRefresh()
+
+// 	// SQLite file
+// 	store, err := metadata.New("metadata.db")
+// 	if err != nil {
+// 		log.Fatal(err)
+// 	}
+
+// 	autoscaler := autoscaler.New(lb, store, 0.7)
+// 	go autoscaler.Start()
+
+// 	proxy.SetBalancer(lb)
+// 	proxy.SetStore(store)
+
+// 	http.HandleFunc("/login", proxy.LoginHandler)
+// 	http.HandleFunc("/metrics", proxy.AuthMiddleware(proxy.HandleClusterMetrics(lb)))
+// 	http.HandleFunc("/health", proxy.AuthMiddleware(proxy.HandleHealth))
+// 	http.HandleFunc("/", proxy.AuthMiddleware(proxy.Handle))
+
+// 	handler := withCORS(http.DefaultServeMux)
+// 	log.Fatal(http.ListenAndServe(":9000", handler))
+
+// 	log.Println("LB running on :9000")
+// 	log.Fatal(http.ListenAndServe(":9000", handler))
+
+// 	// http.HandleFunc("/login", proxy.LoginHandler)
+// 	// http.HandleFunc("/", proxy.AuthMiddleware(proxy.Handle))
+
+// 	// added for frontend ------------
+// 	// handler := corsMiddleware(http.DefaultServeMux)
+// 	// log.Fatal(http.ListenAndServe(":9000", handler))
+
+// 	// log.Println("LB running on :9000")
+// 	// //log.Fatal(http.ListenAndServe(":9000", nil))
+// 	// log.Fatal(http.ListenAndServe(":9000", corsMiddleware(http.DefaultServeMux)))
+// }

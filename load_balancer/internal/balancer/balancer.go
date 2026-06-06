@@ -107,8 +107,8 @@ func (b *Balancer) refreshMetrics() {
 
 			var m struct {
 				DBCount     int64   `json:"db_count"`
-				CPUUsage    float64 `json:"cpu_usage"`
-				MemoryUsage float64 `json:"memory_usage"`
+				CPUUsage    float64 `json:"cpu_percent"`
+				MemoryUsage float64 `json:"mem_percent"`
 			}
 
 			if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
