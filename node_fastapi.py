@@ -635,6 +635,49 @@ def replication_status(db_id: str):
         if conn:
             conn.close()
 
+import threading
+import time
+
+def docker_sync_loop(interval: int = 5):
+    """
+    Background job:
+    - co N sekund sprawdza status kontenerów w Dockerze
+    - aktualizuje db_registry
+    - zapisuje do pliku JSON
+    """
+    global db_registry
+
+    while True:
+        changed = False
+
+        for db_id, entry in list(db_registry.items()):
+            try:
+                container = docker_client.containers.get(entry["container_id"])
+                new_status = container.status  # running / exited / paused
+
+                if entry.get("status") != new_status:
+                    entry["status"] = new_status
+                    changed = True
+
+            except docker.errors.NotFound:
+                if entry.get("status") != "missing":
+                    entry["status"] = "missing"
+                    changed = True
+
+        if changed:
+            _save_registry()
+
+        time.sleep(interval)
+
+@app.on_event("startup")
+def start_docker_sync():
+    thread = threading.Thread(
+        target=docker_sync_loop,
+        args=(5,),
+        daemon=True
+    )
+    thread.start()
+
 # uruchomienie ------------------------
 if __name__ == "__main__":
     import uvicorn

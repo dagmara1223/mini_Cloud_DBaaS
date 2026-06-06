@@ -17,7 +17,7 @@
     "port": 5501,
     "container_id": "49a64f6644be2ac4cd9f4c501090655a939bb1f4054d7d0954a37b88b9f677f1",
     "container_name": "pg_146547c6",
-    "status": "exited"
+    "status": "running"
   },
   "1dda0b01": {
     "db_id": "1dda0b01",
@@ -27,17 +27,7 @@
     "port": 5502,
     "container_id": "862cf55af69069dbfbc26d5589424bc858d97a095d3c5ed5fbbbea46dcc67be1",
     "container_name": "pg_1dda0b01",
-    "status": "exited"
-  },
-  "25e853e1": {
-    "db_id": "25e853e1",
-    "db_name": "admin2",
-    "owner": "admin",
-    "password": "aaa",
-    "port": 5503,
-    "container_id": "096ecd1eb46356285c3c1b82cb64f15f617e2c7c9bdb0735b810619bd918b148",
-    "container_name": "pg_25e853e1",
-    "status": "exited"
+    "status": "missing"
   },
   "99fbe24f": {
     "db_id": "99fbe24f",
@@ -58,5 +48,15 @@
     "container_id": "678d10e11b9a482fa8d075aecbc40b5d605ec4c56e8e119e4cc36959bca62c98",
     "container_name": "pg_563d2eb6",
     "status": "exited"
+  },
+  "5d3ad794": {
+    "db_id": "5d3ad794",
+    "db_name": "nat",
+    "owner": "admin",
+    "password": "aaa",
+    "port": 5503,
+    "container_id": "dcc54d5978b5029059034d4bc431579fdbf93fa9d2f2f91fc2258547b0804c42",
+    "container_name": "pg_5d3ad794",
+    "status": "running"
   }
 }

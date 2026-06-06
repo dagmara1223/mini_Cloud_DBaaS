@@ -169,3 +169,11 @@ func (s *Store) GetAll() ([]DBRecord, error) {
 
 	return result, nil
 }
+
+func (s *Store) UpdateStatus(dbID, status string) (sql.Result, error) {
+    return s.db.Exec(`
+        UPDATE databases
+        SET status = ?
+        WHERE db_id = ?
+    `, status, dbID)
+}
