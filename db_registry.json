@@ -1,92 +1,22 @@
 {
-  "c633baf3": {
-    "db_id": "c633baf3",
-    "db_name": "dagmara",
-    "owner": "dagmara",
+  "5fa05836": {
+    "db_id": "5fa05836",
+    "db_name": "cat",
+    "owner": "aa",
     "password": "aaa",
     "port": 5500,
-    "container_id": "4e505e0dfab590732795dae64a3d3a5677f119c1ad8a23b7b189842e01504dd2",
-    "container_name": "pg_c633baf3",
-    "status": "exited"
-  },
-  "146547c6": {
-    "db_id": "146547c6",
-    "db_name": "dagmara1",
-    "owner": "dagmara",
-    "password": "aaa",
-    "port": 5501,
-    "container_id": "49a64f6644be2ac4cd9f4c501090655a939bb1f4054d7d0954a37b88b9f677f1",
-    "container_name": "pg_146547c6",
+    "container_id": "f29b9cf272614a88d1d73229ce1da28c89b2ad8f64114c8c0fd6aa99eeacbb75",
+    "container_name": "pg_5fa05836",
     "status": "running"
   },
-  "1dda0b01": {
-    "db_id": "1dda0b01",
-    "db_name": "admin2",
-    "owner": "admin",
-    "password": "aaa",
-    "port": 5502,
-    "container_id": "862cf55af69069dbfbc26d5589424bc858d97a095d3c5ed5fbbbea46dcc67be1",
-    "container_name": "pg_1dda0b01",
-    "status": "missing"
-  },
-  "99fbe24f": {
-    "db_id": "99fbe24f",
-    "db_name": "admin",
-    "owner": "admin",
-    "password": "aaa",
-    "port": 5504,
-    "container_id": "6202e73bee84a69b2b672c89200bede521cc2d080acbf5d9f72c6e9c2ea9989a",
-    "container_name": "pg_99fbe24f",
-    "status": "exited"
-  },
-  "563d2eb6": {
-    "db_id": "563d2eb6",
-    "db_name": "admin",
-    "owner": "admin",
-    "password": "admin",
-    "port": 5505,
-    "container_id": "678d10e11b9a482fa8d075aecbc40b5d605ec4c56e8e119e4cc36959bca62c98",
-    "container_name": "pg_563d2eb6",
-    "status": "exited"
-  },
-  "5d3ad794": {
-    "db_id": "5d3ad794",
-    "db_name": "nat",
-    "owner": "admin",
-    "password": "aaa",
-    "port": 5503,
-    "container_id": "dcc54d5978b5029059034d4bc431579fdbf93fa9d2f2f91fc2258547b0804c42",
-    "container_name": "pg_5d3ad794",
-    "status": "stopped"
-  },
-  "381f2621": {
-    "db_id": "381f2621",
-    "db_name": "Aa",
-    "owner": "aa",
-    "password": "aa",
-    "port": 5506,
-    "container_id": "0f33a17cdb6e063432f325df548c309a5a10069a911d8d70c89ee73bc5bf4fd2",
-    "container_name": "pg_381f2621",
-    "status": "stopped"
-  },
-  "f51ff16b": {
-    "db_id": "f51ff16b",
-    "db_name": "aa",
-    "owner": "aa",
-    "password": "aa",
-    "port": 5507,
-    "container_id": "8221e72c801ade64c61251da343cdf95b99c31820129d2a7b82f300b9c867c5c",
-    "container_name": "pg_f51ff16b",
-    "status": "running"
-  },
-  "5776dc8c": {
-    "db_id": "5776dc8c",
+  "7534282d": {
+    "db_id": "7534282d",
     "db_name": "cat",
     "owner": "admin",
     "password": "aaa",
-    "port": 5508,
-    "container_id": "77aa48922fd642585b8532d5ac0ece617e2f2151953f89b3acdc19f2028b8170",
-    "container_name": "pg_5776dc8c",
+    "port": 5501,
+    "container_id": "25fa7215ae85528b142b5ed0a2a78cae051f9b0c5d5377f56c3a0f454d5af8ee",
+    "container_name": "pg_7534282d",
     "status": "running"
   }
 }
