@@ -103,7 +103,7 @@ func handleCreateDB(w http.ResponseWriter, r *http.Request) {
 	store.Save(metadata.DBRecord{
 		DBID:          dbID,
 		PrimaryNodeID: node.URL,
-		Status:        "active",
+		Status:        "running",
 		Owner:         user,
 	})
 

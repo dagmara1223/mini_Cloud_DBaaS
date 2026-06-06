@@ -7,7 +7,7 @@
     "port": 5500,
     "container_id": "4e505e0dfab590732795dae64a3d3a5677f119c1ad8a23b7b189842e01504dd2",
     "container_name": "pg_c633baf3",
-    "status": "running"
+    "status": "exited"
   },
   "146547c6": {
     "db_id": "146547c6",
@@ -17,7 +17,7 @@
     "port": 5501,
     "container_id": "49a64f6644be2ac4cd9f4c501090655a939bb1f4054d7d0954a37b88b9f677f1",
     "container_name": "pg_146547c6",
-    "status": "running"
+    "status": "exited"
   },
   "1dda0b01": {
     "db_id": "1dda0b01",
@@ -27,7 +27,7 @@
     "port": 5502,
     "container_id": "862cf55af69069dbfbc26d5589424bc858d97a095d3c5ed5fbbbea46dcc67be1",
     "container_name": "pg_1dda0b01",
-    "status": "running"
+    "status": "exited"
   },
   "25e853e1": {
     "db_id": "25e853e1",
@@ -37,7 +37,7 @@
     "port": 5503,
     "container_id": "096ecd1eb46356285c3c1b82cb64f15f617e2c7c9bdb0735b810619bd918b148",
     "container_name": "pg_25e853e1",
-    "status": "running"
+    "status": "exited"
   },
   "99fbe24f": {
     "db_id": "99fbe24f",
@@ -47,7 +47,7 @@
     "port": 5504,
     "container_id": "6202e73bee84a69b2b672c89200bede521cc2d080acbf5d9f72c6e9c2ea9989a",
     "container_name": "pg_99fbe24f",
-    "status": "running"
+    "status": "exited"
   },
   "563d2eb6": {
     "db_id": "563d2eb6",
@@ -57,6 +57,6 @@
     "port": 5505,
     "container_id": "678d10e11b9a482fa8d075aecbc40b5d605ec4c56e8e119e4cc36959bca62c98",
     "container_name": "pg_563d2eb6",
-    "status": "running"
+    "status": "exited"
   }
 }

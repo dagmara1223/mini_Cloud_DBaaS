@@ -12,11 +12,11 @@ type Store struct {
 }
 
 type DBRecord struct {
-	DBID           string
-	PrimaryNodeID  string
-	ReplicaNodeIDs []string
-	Status         string
-	Owner          string
+    DBID           string   `json:"db_id"`
+    PrimaryNodeID  string   `json:"primary_node_id"`
+    ReplicaNodeIDs []string `json:"replica_node_ids"`
+    Status         string   `json:"status"`
+    Owner          string   `json:"owner"`
 }
 
 func New(path string) (*Store, error) {
