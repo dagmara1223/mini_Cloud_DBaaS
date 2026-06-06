@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"net"
 
 	"github.com/nkucht4/load_balancer/internal/balancer"
 	"github.com/nkucht4/load_balancer/internal/metadata"
@@ -180,13 +180,40 @@ func handleCreateDB(w http.ResponseWriter, r *http.Request) {
 func handleListAllDBs(w http.ResponseWriter, r *http.Request) {
 	user, _ := r.Context().Value(userKey).(string)
 
-	all, _ := store.GetAll()
+	nodes := lb.GetNodes()
+	client := &http.Client{Timeout: 2 * time.Second}
 
-	out := []metadata.DBRecord{}
-	for _, db := range all {
-		if db.Owner == user {
-			out = append(out, db)
+	merged := make(map[string]metadata.DBRecord)
+
+	for _, n := range nodes {
+		req, err := http.NewRequest("GET", n.URL+"/databases", nil)
+		if err != nil {
+			continue
 		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		var nodeDBs []metadata.DBRecord
+		if err := json.Unmarshal(body, &nodeDBs); err != nil {
+			continue
+		}
+
+		for _, db := range nodeDBs {
+			if db.Owner == user {
+				merged[db.DBID] = db
+			}
+		}
+	}
+
+	out := make([]metadata.DBRecord, 0, len(merged))
+	for _, v := range merged {
+		out = append(out, v)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -394,30 +421,25 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		targetURL += "?" + r.URL.RawQuery
 	}
 
-	dialer := websocket.Dialer{
-		Proxy: http.ProxyFromEnvironment,
-	}
-
-	backendConn, _, err := dialer.Dial(targetURL, r.Header)
+	backendConn, err := net.Dial("tcp", strings.TrimPrefix(targetURL, "ws://"))
 	if err != nil {
 		_ = clientConn.Close()
 		return
 	}
 
-	errCh := make(chan error, 2)
+	done := make(chan struct{}, 2)
 
 	go func() {
-		_, err := io.Copy(clientConn, backendConn.UnderlyingConn())
-		errCh <- err
+		_, _ = io.Copy(clientConn, backendConn)
+		done <- struct{}{}
 	}()
 
 	go func() {
-		_, err := io.Copy(backendConn.UnderlyingConn(), clientConn)
-		errCh <- err
+		_, _ = io.Copy(backendConn, clientConn)
+		done <- struct{}{}
 	}()
 
-	<-errCh
-
+	<-done
 	_ = clientConn.Close()
 	_ = backendConn.Close()
 }
