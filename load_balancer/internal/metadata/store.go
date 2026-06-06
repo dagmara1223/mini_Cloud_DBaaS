@@ -14,6 +14,8 @@ type Store struct {
 
 type DBRecord struct {
     DBID           string   `json:"db_id"`
+    DBName         string   `json:"db_name"`
+    Port           int      `json:"port"`
     PrimaryNodeID  string   `json:"primary_node_id"`
     ReplicaNodeIDs []string `json:"replica_node_ids"`
     Status         string   `json:"status"`
@@ -39,12 +41,14 @@ func New(path string) (*Store, error) {
 
 func (s *Store) initSchema() error {
 	_, err := s.db.Exec(`
-	CREATE TABLE IF NOT EXISTS databases (
+		CREATE TABLE IF NOT EXISTS databases (
 		db_id TEXT PRIMARY KEY,
 		primary_node_id TEXT,
 		replica_node_ids TEXT,
 		status TEXT,
-		owner TEXT
+		owner TEXT,
+		db_name TEXT,
+		port INTEGER
 	);
 	`)
 	return err

@@ -427,22 +427,33 @@ export default function App() {
         setMemHistory((p) => [...p.slice(-40), m.mem_percent]);
       }
       if (dbRes.ok) {
-        const dbs = await dbRes.json();
-        setDatabases(dbs);
-        // per-db CPU
-        for (const db of dbs) {
-          try {
-            const r = await fetch(`${API}/databases/${db.db_id}/metrics`, { headers: authHeaders() });
-            if (r.ok) {
-              const d = await r.json();
-              setDbCpu((prev) => ({
-                ...prev,
-                [db.db_id]: [...(prev[db.db_id] || []).slice(-20), d.cpu_percent],
-              }));
-            }
-          } catch { /* ignoruj */ }
-        }
+  const dbs = await dbRes.json();
+  setDatabases(dbs);
+
+  const runningDBs = dbs.filter(db => db.status === "running");
+
+  for (const db of runningDBs) {
+    try {
+      const r = await fetch(`${API}/databases/${db.db_id}/metrics`, {
+        headers: authHeaders(),
+      });
+
+      if (r.ok) {
+        const d = await r.json();
+
+        setDbCpu((prev) => ({
+          ...prev,
+          [db.db_id]: [
+            ...(prev[db.db_id] || []).slice(-20),
+            d.cpu_percent,
+          ],
+        }));
       }
+    } catch {
+      // ignore
+    }
+  }
+}
       setLastUpdate(new Date());
     } catch { /* serwer offline */ }
   }, []);
