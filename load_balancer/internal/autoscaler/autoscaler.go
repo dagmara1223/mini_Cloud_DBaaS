@@ -19,8 +19,8 @@ type Autoscaler struct {
 	CPULowThreshold  float64
 
 	MaxReplicasPerDB int
-	Interval          time.Duration
-	client            *http.Client
+	Interval         time.Duration
+	client           *http.Client
 }
 
 var lastScaleUp = map[string]time.Time{}
@@ -31,7 +31,7 @@ func New(lb *balancer.Balancer, store *metadata.Store, threshold float64) *Autos
 		lb:                lb,
 		store:             store,
 		CPUHighThreshold:  threshold,
-		CPULowThreshold:   threshold * 0.4, // auto scale down point
+		CPULowThreshold:   threshold * 0.4,
 		MaxReplicasPerDB:  3,
 		Interval:          10 * time.Second,
 		client: &http.Client{
@@ -44,7 +44,6 @@ func (a *Autoscaler) Start() {
 	log.Println("[AUTOSCALER] started")
 
 	ticker := time.NewTicker(a.Interval)
-
 	for range ticker.C {
 		a.runOnce()
 	}
@@ -58,72 +57,59 @@ func (a *Autoscaler) runOnce() {
 			continue
 		}
 
-		// SCALE UP
 		if node.CPUUsage > a.CPUHighThreshold {
 			a.scaleUp(node)
-		}
-
-		// SCALE DOWN
-		if node.CPUUsage < a.CPULowThreshold {
+		} else if node.CPUUsage < a.CPULowThreshold {
 			a.scaleDown(node)
 		}
 	}
 }
 
-//
-// ========================= SCALE UP =========================
-//
 func (a *Autoscaler) scaleUp(node balancer.Node) {
-
-	// cooldown per node
-	if t, ok := lastScaleUp[node.URL]; ok {
-		if time.Since(t) < 60*time.Second {
-			return
-		}
+	if t, ok := lastScaleUp[node.URL]; ok && time.Since(t) < 60*time.Second {
+		return
 	}
 	lastScaleUp[node.URL] = time.Now()
 
 	dbs, err := a.store.GetDBsByNode(node.URL)
 	if err != nil {
-		log.Println("[AUTOSCALER] fetch dbs error:", err)
+		log.Println("[AUTOSCALER] GetDBsByNode error:", err)
 		return
 	}
 
 	for _, db := range dbs {
 
-		// limit replicas per DB
 		if len(db.ReplicaNodeIDs) >= a.MaxReplicasPerDB {
 			continue
 		}
 
 		target, err := a.selectTargetNode(node.URL)
 		if err != nil {
-			log.Println("[AUTOSCALER] no target:", err)
+			log.Println("[AUTOSCALER] no target node:", err)
 			return
 		}
 
-		// prevent duplicate replica on same node
 		if contains(db.ReplicaNodeIDs, target.URL) {
 			continue
 		}
 
-		replicaURL := node.URL + "/databases/" + db.DBID + "/replica"
-
-		payload := map[string]string{
+		reqBody := map[string]string{
 			"target_node": target.URL,
 		}
 
-		body, _ := json.Marshal(payload)
+		body, _ := json.Marshal(reqBody)
 
-		resp, err := a.client.Post(replicaURL, "application/json", bytes.NewBuffer(body))
+		url := node.URL + "/databases/" + db.DBID + "/replica"
+
+		resp, err := a.client.Post(url, "application/json", bytes.NewBuffer(body))
 		if err != nil {
-			log.Println("[AUTOSCALER] replica create failed:", err)
+			log.Println("[AUTOSCALER] scale up failed:", err)
 			continue
 		}
 		resp.Body.Close()
 
-		if resp.StatusCode != http.StatusOK {
-			log.Println("[AUTOSCALER] replica failed:", resp.Status)
+		if resp.StatusCode >= 400 {
+			log.Println("[AUTOSCALER] scale up rejected:", resp.Status)
 			continue
 		}
 
@@ -133,48 +119,55 @@ func (a *Autoscaler) scaleUp(node balancer.Node) {
 	}
 }
 
-//
-// ========================= SCALE DOWN =========================
-//
 func (a *Autoscaler) scaleDown(node balancer.Node) {
-
-	if t, ok := lastScaleDown[node.URL]; ok {
-		if time.Since(t) < 90*time.Second {
-			return
-		}
+	if t, ok := lastScaleDown[node.URL]; ok && time.Since(t) < 90*time.Second {
+		return
 	}
 	lastScaleDown[node.URL] = time.Now()
 
 	dbs, err := a.store.GetDBsByNode(node.URL)
 	if err != nil {
+		log.Println("[AUTOSCALER] GetDBsByNode error:", err)
 		return
 	}
 
 	for _, db := range dbs {
 
-		// only scale down replicas
 		if len(db.ReplicaNodeIDs) == 0 {
 			continue
 		}
 
-		// pick last replica
 		replicaNode := db.ReplicaNodeIDs[len(db.ReplicaNodeIDs)-1]
 
-		log.Printf("[AUTOSCALER] SCALE DOWN db=%s replica=%s", db.DBID, replicaNode)
+		// IMPORTANT: we assume replica DBID == primary DBID naming scheme
+		// If your system differs, adjust this mapping
+		replicaDBID := db.DBID
 
-		// remove from store (logical)
-		newReplicas := remove(db.ReplicaNodeIDs, replicaNode)
-		db.ReplicaNodeIDs = newReplicas
+		log.Printf("[AUTOSCALER] SCALE DOWN db=%s replicaNode=%s", db.DBID, replicaNode)
+
+		delURL := replicaNode + "/databases/" + replicaDBID
+
+		req, _ := http.NewRequest(http.MethodDelete, delURL, nil)
+		resp, err := a.client.Do(req)
+		if err != nil {
+			log.Println("[AUTOSCALER] delete replica failed:", err)
+			continue
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode >= 400 {
+			log.Println("[AUTOSCALER] delete rejected:", resp.Status)
+			continue
+		}
+
+		db.ReplicaNodeIDs = remove(db.ReplicaNodeIDs, replicaNode)
 
 		_ = a.store.Save(db)
 
-		// optionally: you should call node delete endpoint here
+		log.Printf("[AUTOSCALER] SCALE DOWN complete db=%s replica=%s", db.DBID, replicaNode)
 	}
 }
 
-//
-// ========================= TARGET SELECTION =========================
-//
 func (a *Autoscaler) selectTargetNode(exclude string) (balancer.Node, error) {
 	nodes := a.lb.GetNodes()
 
@@ -203,9 +196,6 @@ func (a *Autoscaler) selectTargetNode(exclude string) (balancer.Node, error) {
 	return best, nil
 }
 
-//
-// ========================= HELPERS =========================
-//
 func contains(list []string, v string) bool {
 	for _, x := range list {
 		if x == v {
