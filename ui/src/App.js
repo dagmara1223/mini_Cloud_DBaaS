@@ -391,6 +391,7 @@ function Toast({ msg, type, onDone }) {
 // glowna aplikacja
 export default function App() {
   const [user, setUser] = useState(() => getToken() ? "admin" : null);
+  //const [user, setUser] = useState("admin");
   const handleLogin = (username) => setUser(username);
   const handleLogout = () => { clearToken(); setUser(null); };
   const [health, setHealth] = useState(null);
@@ -421,39 +422,56 @@ export default function App() {
       }
       if (hRes.ok) setHealth(await hRes.json());
       if (mRes.ok) {
-        const m = await mRes.json();
-        setMetrics(m);
-        setCpuHistory((p) => [...p.slice(-40), m.cpu_percent]);
-        setMemHistory((p) => [...p.slice(-40), m.mem_percent]);
+        const data = await mRes.json();
+        const nodes = Array.isArray(data) ? data : [{ metrics: data }];
+        const active = nodes.filter(n => n.metrics);
+
+        if (active.length > 0) {
+          // średnia ze wszystkich node'ów - srednie obciazenie clustera
+          const avg = (key) =>
+            active.reduce((sum, n) => sum + (n.metrics[key] ?? 0), 0) / active.length;
+
+          const m = {
+            cpu_percent: avg("cpu_percent"),
+            mem_percent: avg("mem_percent"),
+            mem_available_mb: avg("mem_available_mb"),
+            db_count: active.reduce((sum, n) => sum + (n.metrics.db_count ?? 0), 0),
+            active_dbs: active.reduce((sum, n) => sum + (n.metrics.active_dbs ?? 0), 0),
+          };
+
+          setMetrics(m);
+          setCpuHistory((p) => [...p.slice(-40), m.cpu_percent]);
+          setMemHistory((p) => [...p.slice(-40), m.mem_percent]);
+        }
       }
       if (dbRes.ok) {
-  const dbs = await dbRes.json();
-  setDatabases(dbs);
+        const dbs = await dbRes.json();
+        setDatabases(dbs);
 
-  const runningDBs = dbs.filter(db => db.status === "running");
+        const runningDBs = dbs.filter(db => db.status === "running");
 
-  for (const db of runningDBs) {
-    try {
-      const r = await fetch(`${API}/databases/${db.db_id}/metrics`, {
-        headers: authHeaders(),
-      });
+        for (const db of runningDBs) {
+          try {
+            const r = await fetch(`${API}/databases/${db.db_id}/metrics`, {
+              headers: authHeaders(),
+            });
 
-      if (r.ok) {
-        const d = await r.json();
+            if (r.ok) {
+              const d = await r.json();
 
-        setDbCpu((prev) => ({
-          ...prev,
-          [db.db_id]: [
-            ...(prev[db.db_id] || []).slice(-20),
-            d.cpu_percent,
-          ],
-        }));
+              setDbCpu((prev) => ({
+                ...prev,
+                [db.db_id]: [
+                  ...(prev[db.db_id] || []).slice(-20),
+                  d.cpu_percent,
+                ],
+              }));
+            }
+          } catch {
+            // ignore
+          }
+        }
       }
-    } catch {
-      // ignore
-    }
-  }
-}
       setLastUpdate(new Date());
     } catch { /* serwer offline */ }
   }, []);
