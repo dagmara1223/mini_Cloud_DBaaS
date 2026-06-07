@@ -15,19 +15,25 @@ type Autoscaler struct {
 	lb    *balancer.Balancer
 	store *metadata.Store
 
-	CPUThreshold float64
-	Interval     time.Duration
-	client       *http.Client
+	CPUHighThreshold float64
+	CPULowThreshold  float64
+
+	MaxReplicasPerDB int
+	Interval          time.Duration
+	client            *http.Client
 }
 
-var lastScale = map[string]time.Time{}
+var lastScaleUp = map[string]time.Time{}
+var lastScaleDown = map[string]time.Time{}
 
 func New(lb *balancer.Balancer, store *metadata.Store, threshold float64) *Autoscaler {
 	return &Autoscaler{
-		lb:           lb,
-		store:        store,
-		CPUThreshold: threshold,
-		Interval:     10 * time.Second,
+		lb:                lb,
+		store:             store,
+		CPUHighThreshold:  threshold,
+		CPULowThreshold:   threshold * 0.4, // auto scale down point
+		MaxReplicasPerDB:  3,
+		Interval:          10 * time.Second,
 		client: &http.Client{
 			Timeout: 5 * time.Second,
 		},
@@ -52,50 +58,54 @@ func (a *Autoscaler) runOnce() {
 			continue
 		}
 
-		if node.CPUUsage > a.CPUThreshold {
-			log.Printf("[AUTOSCALER] overload detected on %s (cpu=%.2f)", node.URL, node.CPUUsage)
+		// SCALE UP
+		if node.CPUUsage > a.CPUHighThreshold {
 			a.scaleUp(node)
+		}
+
+		// SCALE DOWN
+		if node.CPUUsage < a.CPULowThreshold {
+			a.scaleDown(node)
 		}
 	}
 }
 
+//
+// ========================= SCALE UP =========================
+//
 func (a *Autoscaler) scaleUp(node balancer.Node) {
 
-	// ---------------- COOLDOWN GUARD ----------------
-	if t, ok := lastScale[node.URL]; ok {
+	// cooldown per node
+	if t, ok := lastScaleUp[node.URL]; ok {
 		if time.Since(t) < 60*time.Second {
-			log.Printf("[AUTOSCALER] cooldown active for %s", node.URL)
 			return
 		}
 	}
+	lastScaleUp[node.URL] = time.Now()
 
-	// ustaw timestamp BEFORE scaling (ważne!)
-	lastScale[node.URL] = time.Now()
-
-	// ---------------- FETCH DBS ----------------
 	dbs, err := a.store.GetDBsByNode(node.URL)
 	if err != nil {
-		log.Println("[AUTOSCALER] failed to fetch DBs:", err)
+		log.Println("[AUTOSCALER] fetch dbs error:", err)
 		return
 	}
 
-	if len(dbs) == 0 {
-		return
-	}
-
-	// ---------------- SCALE EACH DB ----------------
 	for _, db := range dbs {
+
+		// limit replicas per DB
+		if len(db.ReplicaNodeIDs) >= a.MaxReplicasPerDB {
+			continue
+		}
 
 		target, err := a.selectTargetNode(node.URL)
 		if err != nil {
-			log.Println("[AUTOSCALER] no target node:", err)
+			log.Println("[AUTOSCALER] no target:", err)
 			return
 		}
 
-		log.Printf(
-			"[AUTOSCALER] scaling db=%s from %s -> %s",
-			db.DBID, node.URL, target.URL,
-		)
+		// prevent duplicate replica on same node
+		if contains(db.ReplicaNodeIDs, target.URL) {
+			continue
+		}
 
 		replicaURL := node.URL + "/databases/" + db.DBID + "/replica"
 
@@ -105,11 +115,7 @@ func (a *Autoscaler) scaleUp(node balancer.Node) {
 
 		body, _ := json.Marshal(payload)
 
-		resp, err := a.client.Post(
-			replicaURL,
-			"application/json",
-			bytes.NewBuffer(body),
-		)
+		resp, err := a.client.Post(replicaURL, "application/json", bytes.NewBuffer(body))
 		if err != nil {
 			log.Println("[AUTOSCALER] replica create failed:", err)
 			continue
@@ -117,21 +123,58 @@ func (a *Autoscaler) scaleUp(node balancer.Node) {
 		resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			log.Println("[AUTOSCALER] replica creation failed:", resp.Status)
+			log.Println("[AUTOSCALER] replica failed:", resp.Status)
 			continue
 		}
 
-		// ---------------- STORE METADATA ----------------
-		err = a.store.AddReplica(db.DBID, target.URL)
-		if err != nil {
-			log.Println("[AUTOSCALER] failed to save replica:", err)
-			continue
-		}
+		_ = a.store.AddReplica(db.DBID, target.URL)
 
-		log.Printf("[AUTOSCALER] replica added db=%s -> %s", db.DBID, target.URL)
+		log.Printf("[AUTOSCALER] SCALE UP db=%s -> %s", db.DBID, target.URL)
 	}
 }
 
+//
+// ========================= SCALE DOWN =========================
+//
+func (a *Autoscaler) scaleDown(node balancer.Node) {
+
+	if t, ok := lastScaleDown[node.URL]; ok {
+		if time.Since(t) < 90*time.Second {
+			return
+		}
+	}
+	lastScaleDown[node.URL] = time.Now()
+
+	dbs, err := a.store.GetDBsByNode(node.URL)
+	if err != nil {
+		return
+	}
+
+	for _, db := range dbs {
+
+		// only scale down replicas
+		if len(db.ReplicaNodeIDs) == 0 {
+			continue
+		}
+
+		// pick last replica
+		replicaNode := db.ReplicaNodeIDs[len(db.ReplicaNodeIDs)-1]
+
+		log.Printf("[AUTOSCALER] SCALE DOWN db=%s replica=%s", db.DBID, replicaNode)
+
+		// remove from store (logical)
+		newReplicas := remove(db.ReplicaNodeIDs, replicaNode)
+		db.ReplicaNodeIDs = newReplicas
+
+		_ = a.store.Save(db)
+
+		// optionally: you should call node delete endpoint here
+	}
+}
+
+//
+// ========================= TARGET SELECTION =========================
+//
 func (a *Autoscaler) selectTargetNode(exclude string) (balancer.Node, error) {
 	nodes := a.lb.GetNodes()
 
@@ -158,6 +201,28 @@ func (a *Autoscaler) selectTargetNode(exclude string) (balancer.Node, error) {
 	}
 
 	return best, nil
+}
+
+//
+// ========================= HELPERS =========================
+//
+func contains(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func remove(list []string, v string) []string {
+	out := []string{}
+	for _, x := range list {
+		if x != v {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 var ErrNoTargetNode = &AutoscalerError{"no target node available"}

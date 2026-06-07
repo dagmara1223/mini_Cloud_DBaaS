@@ -15,12 +15,11 @@ type Store struct {
 
 type DBRecord struct {
     DBID           string   `json:"db_id"`
-    DBName         string   `json:"db_name"`
-    Port           int      `json:"port"`
     PrimaryNodeID  string   `json:"primary_node_id"`
     ReplicaNodeIDs []string `json:"replica_node_ids"`
     Status         string   `json:"status"`
     Owner          string   `json:"owner"`
+    Role           string   `json:"role"`
 }
 
 func New(path string) (*Store, error) {
