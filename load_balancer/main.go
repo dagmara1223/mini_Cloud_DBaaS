@@ -60,9 +60,9 @@ func withCORS(next http.Handler) http.Handler {
 
 func main() {
 	lb := balancer.New([]string{
-		// "http://localhost:8001",
-		// "http://localhost:8002",
-		"http://localhost:8000",
+		 "http://localhost:8001",
+		 "http://localhost:8002",
+		//"http://localhost:8000",
 	}, balancer.RoundRobin)
 
 	go lb.StartMetricsRefresh()
