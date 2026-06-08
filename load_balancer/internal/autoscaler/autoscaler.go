@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"time"
+	"fmt"
 
 	"github.com/nkucht4/load_balancer/internal/balancer"
 	"github.com/nkucht4/load_balancer/internal/metadata"
@@ -24,7 +25,6 @@ type Autoscaler struct {
 	client *http.Client
 }
 
-// cooldown per node + per db (stability fix)
 var lastScaleUp = map[string]time.Time{}
 var lastScaleDown = map[string]time.Time{}
 var lastDBScaleUp = map[string]time.Time{}
@@ -82,7 +82,6 @@ func (a *Autoscaler) scaleUp(node balancer.Node) {
 
 	for _, db := range dbs {
 
-		// per DB cooldown (fix storm scale)
 		if t, ok := lastDBScaleUp[db.DBID]; ok && time.Since(t) < 30*time.Second {
 			continue
 		}
@@ -97,18 +96,22 @@ func (a *Autoscaler) scaleUp(node balancer.Node) {
 			return
 		}
 
+		// HARD SAFETY: prevent same-node replica
+		if target.URL == node.URL {
+			continue
+		}
+
 		if contains(db.ReplicaNodeIDs, target.URL) {
 			continue
 		}
+
+		url := fmt.Sprintf("%s/databases/%s/replica", db.PrimaryNodeID, db.DBID)
 
 		reqBody := map[string]string{
 			"target_node": target.URL,
 		}
 
 		body, _ := json.Marshal(reqBody)
-
-		// FIX: request must go to PRIMARY node (DB owner)
-		url := db.PrimaryNodeID + "/databases/" + db.DBID + "/replica"
 
 		resp, err := a.client.Post(url, "application/json", bytes.NewBuffer(body))
 		if err != nil {
@@ -134,13 +137,11 @@ func (a *Autoscaler) scaleUp(node balancer.Node) {
 		resp.Body.Close()
 
 		if result.ReplicaID == "" {
-			log.Println("[AUTOSCALER] empty replica id")
 			continue
 		}
 
 		record, err := a.store.Get(db.DBID)
 		if err != nil {
-			log.Println("[AUTOSCALER] store get failed:", err)
 			continue
 		}
 
@@ -148,11 +149,11 @@ func (a *Autoscaler) scaleUp(node balancer.Node) {
 			record.ReplicaMap = map[string]string{}
 		}
 
+		record.ReplicaMap[target.URL] = result.ReplicaID
+
 		if !contains(record.ReplicaNodeIDs, target.URL) {
 			record.ReplicaNodeIDs = append(record.ReplicaNodeIDs, target.URL)
 		}
-
-		record.ReplicaMap[target.URL] = result.ReplicaID
 
 		_ = a.store.Save(record)
 
@@ -172,16 +173,10 @@ func (a *Autoscaler) scaleDown(node balancer.Node) {
 
 	dbsPrimary, _ := a.store.GetDBsByNode(node.URL)
 	dbsReplica, _ := a.store.GetDBsByReplicaNode(node.URL)
-
 	dbs := append(dbsPrimary, dbsReplica...)
 
 	for _, db := range dbs {
 
-		if len(db.ReplicaNodeIDs) == 0 {
-			continue
-		}
-
-		// find replica belonging to this node
 		var replicaNode string
 		for _, r := range db.ReplicaNodeIDs {
 			if r == node.URL {
@@ -196,11 +191,10 @@ func (a *Autoscaler) scaleDown(node balancer.Node) {
 
 		replicaID, ok := db.ReplicaMap[replicaNode]
 		if !ok {
-			log.Println("[AUTOSCALER] missing replica mapping:", replicaNode)
 			continue
 		}
 
-		delURL := replicaNode + "/databases/" + replicaID
+		delURL := fmt.Sprintf("%s/databases/%s", replicaNode, replicaID)
 
 		req, _ := http.NewRequest(http.MethodDelete, delURL, nil)
 
@@ -217,7 +211,6 @@ func (a *Autoscaler) scaleDown(node balancer.Node) {
 		}
 		resp.Body.Close()
 
-		// cleanup state
 		delete(db.ReplicaMap, replicaNode)
 		db.ReplicaNodeIDs = remove(db.ReplicaNodeIDs, replicaNode)
 
@@ -236,7 +229,11 @@ func (a *Autoscaler) selectTargetNode(exclude string) (balancer.Node, error) {
 	bestScore := 1e9
 
 	for _, n := range nodes {
-		if !n.Healthy || n.URL == exclude {
+		if !n.Healthy {
+			continue
+		}
+
+		if n.URL == exclude {
 			continue
 		}
 
@@ -250,7 +247,13 @@ func (a *Autoscaler) selectTargetNode(exclude string) (balancer.Node, error) {
 		}
 	}
 
+	// fallback: if cluster is broken, allow same node (prevents deadlock)
 	if best.URL == "" {
+		for _, n := range nodes {
+			if n.Healthy {
+				return n, nil
+			}
+		}
 		return balancer.Node{}, ErrNoTargetNode
 	}
 
