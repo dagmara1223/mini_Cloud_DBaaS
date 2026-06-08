@@ -20,20 +20,23 @@ type Autoscaler struct {
 
 	MaxReplicasPerDB int
 	Interval         time.Duration
-	client           *http.Client
+
+	client *http.Client
 }
 
+// cooldown per node + per db (stability fix)
 var lastScaleUp = map[string]time.Time{}
 var lastScaleDown = map[string]time.Time{}
+var lastDBScaleUp = map[string]time.Time{}
 
 func New(lb *balancer.Balancer, store *metadata.Store, threshold float64) *Autoscaler {
 	return &Autoscaler{
-		lb:                lb,
-		store:             store,
-		CPUHighThreshold:  threshold,
-		CPULowThreshold:   threshold * 0.4,
-		MaxReplicasPerDB:  3,
-		Interval:          10 * time.Second,
+		lb:               lb,
+		store:            store,
+		CPUHighThreshold: threshold,
+		CPULowThreshold:  threshold * 0.4,
+		MaxReplicasPerDB: 3,
+		Interval:         10 * time.Second,
 		client: &http.Client{
 			Timeout: 5 * time.Second,
 		},
@@ -50,9 +53,7 @@ func (a *Autoscaler) Start() {
 }
 
 func (a *Autoscaler) runOnce() {
-	nodes := a.lb.GetNodes()
-
-	for _, node := range nodes {
+	for _, node := range a.lb.GetNodes() {
 		if !node.Healthy {
 			continue
 		}
@@ -65,8 +66,10 @@ func (a *Autoscaler) runOnce() {
 	}
 }
 
+// ================= SCALE UP =================
+
 func (a *Autoscaler) scaleUp(node balancer.Node) {
-	if t, ok := lastScaleUp[node.URL]; ok && time.Since(t) < 60*time.Second {
+	if t, ok := lastScaleUp[node.URL]; ok && time.Since(t) < 10*time.Second {
 		return
 	}
 	lastScaleUp[node.URL] = time.Now()
@@ -78,6 +81,11 @@ func (a *Autoscaler) scaleUp(node balancer.Node) {
 	}
 
 	for _, db := range dbs {
+
+		// per DB cooldown (fix storm scale)
+		if t, ok := lastDBScaleUp[db.DBID]; ok && time.Since(t) < 30*time.Second {
+			continue
+		}
 
 		if len(db.ReplicaNodeIDs) >= a.MaxReplicasPerDB {
 			continue
@@ -99,37 +107,73 @@ func (a *Autoscaler) scaleUp(node balancer.Node) {
 
 		body, _ := json.Marshal(reqBody)
 
-		url := node.URL + "/databases/" + db.DBID + "/replica"
+		// FIX: request must go to PRIMARY node (DB owner)
+		url := db.PrimaryNodeID + "/databases/" + db.DBID + "/replica"
 
 		resp, err := a.client.Post(url, "application/json", bytes.NewBuffer(body))
 		if err != nil {
 			log.Println("[AUTOSCALER] scale up failed:", err)
 			continue
 		}
-		resp.Body.Close()
 
 		if resp.StatusCode >= 400 {
 			log.Println("[AUTOSCALER] scale up rejected:", resp.Status)
+			resp.Body.Close()
 			continue
 		}
 
-		_ = a.store.AddReplica(db.DBID, target.URL)
+		var result struct {
+			ReplicaID string `json:"replica_id"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			log.Println("[AUTOSCALER] decode failed:", err)
+			continue
+		}
+		resp.Body.Close()
+
+		if result.ReplicaID == "" {
+			log.Println("[AUTOSCALER] empty replica id")
+			continue
+		}
+
+		record, err := a.store.Get(db.DBID)
+		if err != nil {
+			log.Println("[AUTOSCALER] store get failed:", err)
+			continue
+		}
+
+		if record.ReplicaMap == nil {
+			record.ReplicaMap = map[string]string{}
+		}
+
+		if !contains(record.ReplicaNodeIDs, target.URL) {
+			record.ReplicaNodeIDs = append(record.ReplicaNodeIDs, target.URL)
+		}
+
+		record.ReplicaMap[target.URL] = result.ReplicaID
+
+		_ = a.store.Save(record)
+
+		lastDBScaleUp[db.DBID] = time.Now()
 
 		log.Printf("[AUTOSCALER] SCALE UP db=%s -> %s", db.DBID, target.URL)
 	}
 }
 
+// ================= SCALE DOWN =================
+
 func (a *Autoscaler) scaleDown(node balancer.Node) {
-	if t, ok := lastScaleDown[node.URL]; ok && time.Since(t) < 90*time.Second {
+	if t, ok := lastScaleDown[node.URL]; ok && time.Since(t) < 5*time.Second {
 		return
 	}
 	lastScaleDown[node.URL] = time.Now()
 
-	dbs, err := a.store.GetDBsByNode(node.URL)
-	if err != nil {
-		log.Println("[AUTOSCALER] GetDBsByNode error:", err)
-		return
-	}
+	dbsPrimary, _ := a.store.GetDBsByNode(node.URL)
+	dbsReplica, _ := a.store.GetDBsByReplicaNode(node.URL)
+
+	dbs := append(dbsPrimary, dbsReplica...)
 
 	for _, db := range dbs {
 
@@ -137,36 +181,53 @@ func (a *Autoscaler) scaleDown(node balancer.Node) {
 			continue
 		}
 
-		replicaNode := db.ReplicaNodeIDs[len(db.ReplicaNodeIDs)-1]
+		// find replica belonging to this node
+		var replicaNode string
+		for _, r := range db.ReplicaNodeIDs {
+			if r == node.URL {
+				replicaNode = r
+				break
+			}
+		}
 
-		// IMPORTANT: we assume replica DBID == primary DBID naming scheme
-		// If your system differs, adjust this mapping
-		replicaDBID := db.DBID
+		if replicaNode == "" {
+			continue
+		}
 
-		log.Printf("[AUTOSCALER] SCALE DOWN db=%s replicaNode=%s", db.DBID, replicaNode)
+		replicaID, ok := db.ReplicaMap[replicaNode]
+		if !ok {
+			log.Println("[AUTOSCALER] missing replica mapping:", replicaNode)
+			continue
+		}
 
-		delURL := replicaNode + "/databases/" + replicaDBID
+		delURL := replicaNode + "/databases/" + replicaID
 
 		req, _ := http.NewRequest(http.MethodDelete, delURL, nil)
+
 		resp, err := a.client.Do(req)
 		if err != nil {
-			log.Println("[AUTOSCALER] delete replica failed:", err)
+			log.Println("[AUTOSCALER] delete failed:", err)
+			continue
+		}
+
+		if resp.StatusCode >= 400 {
+			log.Println("[AUTOSCALER] delete rejected:", resp.Status)
+			resp.Body.Close()
 			continue
 		}
 		resp.Body.Close()
 
-		if resp.StatusCode >= 400 {
-			log.Println("[AUTOSCALER] delete rejected:", resp.Status)
-			continue
-		}
-
+		// cleanup state
+		delete(db.ReplicaMap, replicaNode)
 		db.ReplicaNodeIDs = remove(db.ReplicaNodeIDs, replicaNode)
 
 		_ = a.store.Save(db)
 
-		log.Printf("[AUTOSCALER] SCALE DOWN complete db=%s replica=%s", db.DBID, replicaNode)
+		log.Printf("[AUTOSCALER] SCALE DOWN db=%s replica=%s", db.DBID, replicaNode)
 	}
 }
+
+// ================= NODE SELECTION =================
 
 func (a *Autoscaler) selectTargetNode(exclude string) (balancer.Node, error) {
 	nodes := a.lb.GetNodes()
@@ -195,6 +256,8 @@ func (a *Autoscaler) selectTargetNode(exclude string) (balancer.Node, error) {
 
 	return best, nil
 }
+
+// ================= HELPERS =================
 
 func contains(list []string, v string) bool {
 	for _, x := range list {

@@ -170,6 +170,7 @@ func handleCreateDB(w http.ResponseWriter, r *http.Request) {
 		PrimaryNodeID: node.URL,
 		Status:        "running",
 		Owner:         user,
+		ReplicaNodeIDs: []string{},
 	})
 
 	writeResponse(w, resp.StatusCode, resp.Header, respBody)

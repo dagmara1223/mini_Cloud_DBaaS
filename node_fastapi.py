@@ -87,7 +87,7 @@ def verify_key(key: str = Security(api_key_header)):
 # persystencja rejestru ------------------------------------------------
 # db_registry zapisywany jest do pliku JSON przy każdej zmianie stanu.
 # dzięki temu po restarcie agenta bazy nie znikają z rejestru (zapisany stan)
-REGISTRY_FILE = Path("db_registry.json")
+REGISTRY_FILE = Path(f"db_registry.json")
 
 def _save_registry():
     """Zapisuje aktualny stan rejestru do pliku JSON."""
@@ -149,6 +149,33 @@ def sync_registry_with_docker():
         except docker.errors.NotFound:
             entry["status"] = "missing"  # kontener zniknął np. ręcznie został usunięty
     _save_registry()
+
+import signal
+import sys
+
+def cleanup_docker():
+    print("Cleaning up Docker containers...")
+
+    for db_id, entry in list(db_registry.items()):
+        try:
+            container = docker_client.containers.get(entry["container_id"])
+            container.stop(timeout=5)
+            container.remove()
+            print(f"Removed container {entry['container_name']}")
+        except docker.errors.NotFound:
+            pass
+        except Exception as e:
+            print(f"Error cleaning {db_id}: {e}")
+
+    db_registry.clear()
+    _save_registry()
+
+def handle_exit(signum, frame):
+    cleanup_docker()
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, handle_exit)
+signal.signal(signal.SIGTERM, handle_exit)
 
 # Pierwszy wolny port, który nie jest używany przez bazy
 def _next_free_port() -> int:
@@ -236,8 +263,15 @@ def create_database(req: CreateDBRequest):
 @app.get("/databases")
 def list_databases():
     """
-    Zwraca wszystkie bazy hostowane na tym node
+    Zwraca tylko PRIMARY bazy (bez replik)
     """
+    return [
+        db for db in db_registry.values()
+        if db.get("role") != "replica"
+    ]
+
+@app.get("/databases/internal")
+def list_all_databases():
     return list(db_registry.values())
 
 # ------------------------ get databases info-------
@@ -678,6 +712,10 @@ def start_docker_sync():
     )
     thread.start()
 
+@app.on_event("shutdown")
+def shutdown_event():
+    cleanup_docker()
+
 # uruchomienie ------------------------
 if __name__ == "__main__":
     import uvicorn
@@ -687,5 +725,7 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", type=str, default="0.0.0.0")
     args = parser.parse_args()
+
+    REGISTRY_FILE = Path(f"db_registry{args.port}.json")
 
     uvicorn.run(app, host=args.host, port=args.port)
