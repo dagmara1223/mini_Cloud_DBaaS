@@ -7,7 +7,7 @@ import (
 	"github.com/nkucht4/load_balancer/internal/balancer"
 	"github.com/nkucht4/load_balancer/internal/metadata"
 	"github.com/nkucht4/load_balancer/internal/proxy"
-	"github.com/nkucht4/load_balancer/internal/autoscaler"
+	//"github.com/nkucht4/load_balancer/internal/autoscaler"
 )
 
 func corsMiddleware(next http.Handler) http.Handler {
@@ -61,7 +61,7 @@ func withCORS(next http.Handler) http.Handler {
 func main() {
 	lb := balancer.New([]string{
 		 "http://localhost:8001",
-		 "https://amuser-scotch-symptom.ngrok-free.dev",
+		 "http://localhost:8002",
 		//"http://localhost:8000",
 	}, balancer.RoundRobin)
 
@@ -72,8 +72,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	a := autoscaler.New(lb, store, 0.7)
-	go a.Start()
+	//a := autoscaler.New(lb, store, 0.7)
+	//go a.Start()
 
 	proxy.SetBalancer(lb)
 	proxy.SetStore(store)
