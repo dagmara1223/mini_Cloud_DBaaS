@@ -66,7 +66,7 @@ func (a *Autoscaler) runOnce() {
 	}
 }
 
-// ================= SCALE UP =================
+// SCALE UP
 
 func (a *Autoscaler) scaleUp(node balancer.Node) {
 	if t, ok := lastScaleUp[node.URL]; ok && time.Since(t) < 10*time.Second {
@@ -163,7 +163,7 @@ func (a *Autoscaler) scaleUp(node balancer.Node) {
 	}
 }
 
-// ================= SCALE DOWN =================
+// SCALE DOWN 
 
 func (a *Autoscaler) scaleDown(node balancer.Node) {
 	if t, ok := lastScaleDown[node.URL]; ok && time.Since(t) < 5*time.Second {
@@ -220,7 +220,7 @@ func (a *Autoscaler) scaleDown(node balancer.Node) {
 	}
 }
 
-// ================= NODE SELECTION =================
+// NODE SELECTION
 
 func (a *Autoscaler) selectTargetNode(exclude string) (balancer.Node, error) {
 	nodes := a.lb.GetNodes()
@@ -260,7 +260,7 @@ func (a *Autoscaler) selectTargetNode(exclude string) (balancer.Node, error) {
 	return best, nil
 }
 
-// ================= HELPERS =================
+// HELPERS 
 
 func contains(list []string, v string) bool {
 	for _, x := range list {
