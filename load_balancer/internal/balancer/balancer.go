@@ -134,7 +134,6 @@ func (b *Balancer) refreshMetrics() {
 				"[METRICS]",
 				n.URL,
 				"status=", status,
-				"dbs=", n.DBCount,
 				"cpu=", n.CPUUsage,
 				"mem=", n.MemoryUsage,
 			)

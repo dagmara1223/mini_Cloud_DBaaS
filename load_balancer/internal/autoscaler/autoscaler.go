@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"time"
+	"fmt"
 
 	"github.com/nkucht4/load_balancer/internal/balancer"
 	"github.com/nkucht4/load_balancer/internal/metadata"
@@ -15,19 +16,27 @@ type Autoscaler struct {
 	lb    *balancer.Balancer
 	store *metadata.Store
 
-	CPUThreshold float64
-	Interval     time.Duration
-	client       *http.Client
+	CPUHighThreshold float64
+	CPULowThreshold  float64
+
+	MaxReplicasPerDB int
+	Interval         time.Duration
+
+	client *http.Client
 }
 
-var lastScale = map[string]time.Time{}
+var lastScaleUp = map[string]time.Time{}
+var lastScaleDown = map[string]time.Time{}
+var lastDBScaleUp = map[string]time.Time{}
 
 func New(lb *balancer.Balancer, store *metadata.Store, threshold float64) *Autoscaler {
 	return &Autoscaler{
-		lb:           lb,
-		store:        store,
-		CPUThreshold: threshold,
-		Interval:     10 * time.Second,
+		lb:               lb,
+		store:            store,
+		CPUHighThreshold: threshold,
+		CPULowThreshold:  threshold * 0.4,
+		MaxReplicasPerDB: 3,
+		Interval:         10 * time.Second,
 		client: &http.Client{
 			Timeout: 5 * time.Second,
 		},
@@ -38,53 +47,48 @@ func (a *Autoscaler) Start() {
 	log.Println("[AUTOSCALER] started")
 
 	ticker := time.NewTicker(a.Interval)
-
 	for range ticker.C {
 		a.runOnce()
 	}
 }
 
 func (a *Autoscaler) runOnce() {
-	nodes := a.lb.GetNodes()
-
-	for _, node := range nodes {
+	for _, node := range a.lb.GetNodes() {
 		if !node.Healthy {
 			continue
 		}
 
-		if node.CPUUsage > a.CPUThreshold {
-			log.Printf("[AUTOSCALER] overload detected on %s (cpu=%.2f)", node.URL, node.CPUUsage)
+		if node.CPUUsage > a.CPUHighThreshold {
 			a.scaleUp(node)
+		} else if node.CPUUsage < a.CPULowThreshold {
+			a.scaleDown(node)
 		}
 	}
 }
 
+// ================= SCALE UP =================
+
 func (a *Autoscaler) scaleUp(node balancer.Node) {
-
-	// ---------------- COOLDOWN GUARD ----------------
-	if t, ok := lastScale[node.URL]; ok {
-		if time.Since(t) < 60*time.Second {
-			log.Printf("[AUTOSCALER] cooldown active for %s", node.URL)
-			return
-		}
+	if t, ok := lastScaleUp[node.URL]; ok && time.Since(t) < 10*time.Second {
+		return
 	}
+	lastScaleUp[node.URL] = time.Now()
 
-	// ustaw timestamp BEFORE scaling (ważne!)
-	lastScale[node.URL] = time.Now()
-
-	// ---------------- FETCH DBS ----------------
 	dbs, err := a.store.GetDBsByNode(node.URL)
 	if err != nil {
-		log.Println("[AUTOSCALER] failed to fetch DBs:", err)
+		log.Println("[AUTOSCALER] GetDBsByNode error:", err)
 		return
 	}
 
-	if len(dbs) == 0 {
-		return
-	}
-
-	// ---------------- SCALE EACH DB ----------------
 	for _, db := range dbs {
+
+		if t, ok := lastDBScaleUp[db.DBID]; ok && time.Since(t) < 30*time.Second {
+			continue
+		}
+
+		if len(db.ReplicaNodeIDs) >= a.MaxReplicasPerDB {
+			continue
+		}
 
 		target, err := a.selectTargetNode(node.URL)
 		if err != nil {
@@ -92,45 +96,131 @@ func (a *Autoscaler) scaleUp(node balancer.Node) {
 			return
 		}
 
-		log.Printf(
-			"[AUTOSCALER] scaling db=%s from %s -> %s",
-			db.DBID, node.URL, target.URL,
-		)
+		// HARD SAFETY: prevent same-node replica
+		if target.URL == node.URL {
+			continue
+		}
 
-		replicaURL := node.URL + "/databases/" + db.DBID + "/replica"
+		if contains(db.ReplicaNodeIDs, target.URL) {
+			continue
+		}
 
-		payload := map[string]string{
+		url := fmt.Sprintf("%s/databases/%s/replica", db.PrimaryNodeID, db.DBID)
+
+		reqBody := map[string]string{
 			"target_node": target.URL,
 		}
 
-		body, _ := json.Marshal(payload)
+		body, _ := json.Marshal(reqBody)
 
-		resp, err := a.client.Post(
-			replicaURL,
-			"application/json",
-			bytes.NewBuffer(body),
-		)
+		resp, err := a.client.Post(url, "application/json", bytes.NewBuffer(body))
 		if err != nil {
-			log.Println("[AUTOSCALER] replica create failed:", err)
+			log.Println("[AUTOSCALER] scale up failed:", err)
+			continue
+		}
+
+		if resp.StatusCode >= 400 {
+			log.Println("[AUTOSCALER] scale up rejected:", resp.Status)
+			resp.Body.Close()
+			continue
+		}
+
+		var result struct {
+			ReplicaID string `json:"replica_id"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			log.Println("[AUTOSCALER] decode failed:", err)
 			continue
 		}
 		resp.Body.Close()
 
-		if resp.StatusCode != http.StatusOK {
-			log.Println("[AUTOSCALER] replica creation failed:", resp.Status)
+		if result.ReplicaID == "" {
 			continue
 		}
 
-		// ---------------- STORE METADATA ----------------
-		err = a.store.AddReplica(db.DBID, target.URL)
+		record, err := a.store.Get(db.DBID)
 		if err != nil {
-			log.Println("[AUTOSCALER] failed to save replica:", err)
 			continue
 		}
 
-		log.Printf("[AUTOSCALER] replica added db=%s -> %s", db.DBID, target.URL)
+		if record.ReplicaMap == nil {
+			record.ReplicaMap = map[string]string{}
+		}
+
+		record.ReplicaMap[target.URL] = result.ReplicaID
+
+		if !contains(record.ReplicaNodeIDs, target.URL) {
+			record.ReplicaNodeIDs = append(record.ReplicaNodeIDs, target.URL)
+		}
+
+		_ = a.store.Save(record)
+
+		lastDBScaleUp[db.DBID] = time.Now()
+
+		log.Printf("[AUTOSCALER] SCALE UP db=%s -> %s", db.DBID, target.URL)
 	}
 }
+
+// ================= SCALE DOWN =================
+
+func (a *Autoscaler) scaleDown(node balancer.Node) {
+	if t, ok := lastScaleDown[node.URL]; ok && time.Since(t) < 5*time.Second {
+		return
+	}
+	lastScaleDown[node.URL] = time.Now()
+
+	dbsPrimary, _ := a.store.GetDBsByNode(node.URL)
+	dbsReplica, _ := a.store.GetDBsByReplicaNode(node.URL)
+	dbs := append(dbsPrimary, dbsReplica...)
+
+	for _, db := range dbs {
+
+		var replicaNode string
+		for _, r := range db.ReplicaNodeIDs {
+			if r == node.URL {
+				replicaNode = r
+				break
+			}
+		}
+
+		if replicaNode == "" {
+			continue
+		}
+
+		replicaID, ok := db.ReplicaMap[replicaNode]
+		if !ok {
+			continue
+		}
+
+		delURL := fmt.Sprintf("%s/databases/%s", replicaNode, replicaID)
+
+		req, _ := http.NewRequest(http.MethodDelete, delURL, nil)
+
+		resp, err := a.client.Do(req)
+		if err != nil {
+			log.Println("[AUTOSCALER] delete failed:", err)
+			continue
+		}
+
+		if resp.StatusCode >= 400 {
+			log.Println("[AUTOSCALER] delete rejected:", resp.Status)
+			resp.Body.Close()
+			continue
+		}
+		resp.Body.Close()
+
+		delete(db.ReplicaMap, replicaNode)
+		db.ReplicaNodeIDs = remove(db.ReplicaNodeIDs, replicaNode)
+
+		_ = a.store.Save(db)
+
+		log.Printf("[AUTOSCALER] SCALE DOWN db=%s replica=%s", db.DBID, replicaNode)
+	}
+}
+
+// ================= NODE SELECTION =================
 
 func (a *Autoscaler) selectTargetNode(exclude string) (balancer.Node, error) {
 	nodes := a.lb.GetNodes()
@@ -139,7 +229,11 @@ func (a *Autoscaler) selectTargetNode(exclude string) (balancer.Node, error) {
 	bestScore := 1e9
 
 	for _, n := range nodes {
-		if !n.Healthy || n.URL == exclude {
+		if !n.Healthy {
+			continue
+		}
+
+		if n.URL == exclude {
 			continue
 		}
 
@@ -153,11 +247,38 @@ func (a *Autoscaler) selectTargetNode(exclude string) (balancer.Node, error) {
 		}
 	}
 
+	// fallback: if cluster is broken, allow same node (prevents deadlock)
 	if best.URL == "" {
+		for _, n := range nodes {
+			if n.Healthy {
+				return n, nil
+			}
+		}
 		return balancer.Node{}, ErrNoTargetNode
 	}
 
 	return best, nil
+}
+
+// ================= HELPERS =================
+
+func contains(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func remove(list []string, v string) []string {
+	out := []string{}
+	for _, x := range list {
+		if x != v {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 var ErrNoTargetNode = &AutoscalerError{"no target node available"}
